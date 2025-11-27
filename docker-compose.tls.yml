@@ -1,0 +1,70 @@
+# TLS-enabled docker-compose override
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.tls.yml up
+
+services:
+  kafka:
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,SSL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,SSL://kafka:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka.keystore.jks
+      KAFKA_SSL_KEYSTORE_PASSWORD: changeit
+      KAFKA_SSL_KEY_PASSWORD: changeit
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: changeit
+      KAFKA_SSL_CLIENT_AUTH: none
+      KAFKA_SSL_ENABLED_PROTOCOLS: TLSv1.2,TLSv1.3
+      KAFKA_SSL_PROTOCOL: TLS
+
+  opensearch:
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=SuperSecret123!
+
+      # Security plugin on
+      - plugins.security.disabled=false
+      - DISABLE_SECURITY_PLUGIN=false
+#
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+
+      # Optional, for initial index
+      - plugins.security.allow_default_init_securityindex=true
+
+      # --- HTTP TLS (REST) ---
+      - plugins.security.ssl.http.enabled=true
+      - plugins.security.ssl.http.keystore_type=JKS
+      - plugins.security.ssl.http.keystore_filepath=certs/opensearch-keystore.jks
+      - plugins.security.ssl.http.keystore_password=changeit
+#      - plugins.security.ssl.http.keystore_alias=opensearch-node1
+      - plugins.security.ssl.http.keystore_alias=localhost
+
+      - plugins.security.ssl.http.truststore_type=JKS
+      - plugins.security.ssl.http.truststore_filepath=certs/truststore.jks
+      - plugins.security.ssl.http.truststore_password=changeit
+
+      # --- Transport TLS (node-to-node) ---
+      - plugins.security.ssl.transport.enabled=true
+      - plugins.security.ssl.transport.enforce_hostname_verification=false
+      - plugins.security.ssl.transport.keystore_type=JKS
+      - plugins.security.ssl.transport.keystore_filepath=certs/opensearch-keystore.jks
+      - plugins.security.ssl.transport.keystore_password=changeit
+      - plugins.security.ssl.transport.keystore_alias=localhost
+
+      - plugins.security.ssl.transport.truststore_type=JKS
+      - plugins.security.ssl.transport.truststore_filepath=certs/truststore.jks
+      - plugins.security.ssl.transport.truststore_password=changeit
+
+      # Admin DN should match a cert DN you actually use for admin operations
+      - plugins.security.authcz.admin_dn=CN=localhost
+
+
+  opensearch-dashboards:
+    environment:
+      - 'OPENSEARCH_HOSTS=["https://opensearch:9200"]'
+      - OPENSEARCH_SSL_CERTIFICATE_AUTHORITIES=/usr/share/opensearch-dashboards/config/certs/root-ca.pem
+      - OPENSEARCH_SSL_VERIFICATION_MODE=none
+

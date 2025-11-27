@@ -1,0 +1,223 @@
+
+services:
+  # PostgreSQL 15
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_taxi_model
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-taxi-network
+
+  # Kafka with KRaft (no Zookeeper)
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,SSL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,SSL://kafka:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      # TLS Configuration (optional - set USE_TLS=true to enable)
+      KAFKA_SSL_KEYSTORE_LOCATION: ${KAFKA_SSL_KEYSTORE_LOCATION:-/etc/kafka/secrets/kafka.keystore.jks}
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_KEYSTORE_PASSWORD:-changeit}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:-changeit}
+      KAFKA_SSL_TRUSTSTORE_LOCATION: ${KAFKA_SSL_TRUSTSTORE_LOCATION:-/etc/kafka/secrets/kafka.truststore.jks}
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_SSL_TRUSTSTORE_PASSWORD:-changeit}
+      KAFKA_SSL_CLIENT_AUTH: ${KAFKA_SSL_CLIENT_AUTH:-none}
+      KAFKA_SSL_ENABLED_PROTOCOLS: TLSv1.2,TLSv1.3
+      KAFKA_SSL_PROTOCOL: TLS
+    ports:
+      - "9092:9092"  # PLAINTEXT
+      - "9094:9094"  # SSL
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+      - ./certs/kafka:/etc/kafka/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-taxi-network
+    depends_on:
+      - postgres
+
+  # OpenSearch 3.3.2
+  opensearch:
+    image: opensearchproject/opensearch:3.3.2
+    container_name: opensearch
+
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=SuperSecret123!
+
+      # Security plugin on
+      - plugins.security.disabled=false
+      - DISABLE_SECURITY_PLUGIN=false
+#
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+
+      # Optional, for initial index
+      - plugins.security.allow_default_init_securityindex=true
+
+      # --- HTTP TLS (REST) ---
+      - plugins.security.ssl.http.enabled=true
+      - plugins.security.ssl.http.keystore_type=JKS
+      - plugins.security.ssl.http.keystore_filepath=certs/opensearch-keystore.jks
+      - plugins.security.ssl.http.keystore_password=changeit
+      - plugins.security.ssl.http.keystore_alias=localhost
+
+      - plugins.security.ssl.http.truststore_type=JKS
+      - plugins.security.ssl.http.truststore_filepath=certs/truststore.jks
+      - plugins.security.ssl.http.truststore_password=changeit
+
+      # --- Transport TLS (node-to-node) ---
+      - plugins.security.ssl.transport.enabled=true
+      - plugins.security.ssl.transport.enforce_hostname_verification=false
+      - plugins.security.ssl.transport.keystore_type=JKS
+      - plugins.security.ssl.transport.keystore_filepath=certs/opensearch-keystore.jks
+      - plugins.security.ssl.transport.keystore_password=changeit
+      - plugins.security.ssl.transport.keystore_alias=localhost
+
+      - plugins.security.ssl.transport.truststore_type=JKS
+      - plugins.security.ssl.transport.truststore_filepath=certs/truststore.jks
+      - plugins.security.ssl.transport.truststore_password=changeit
+
+      # Admin DN should match a cert DN you actually use for admin operations
+      - plugins.security.authcz.admin_dn=CN=localhost
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+      - ./certs/opensearch:/usr/share/opensearch/config/certs:ro
+    ports:
+      - "9200:9200"  # HTTP
+      - "9600:9600"  # Performance Analyzer
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-taxi-network
+
+  # OpenSearch Dashboards
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.3.2
+    container_name: opensearch-dashboards
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=${OPENSEARCH_DISABLE_SECURITY:-true}
+      - OPENSEARCH_USERNAME=admin
+      - OPENSEARCH_PASSWORD=admin
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+
+      # Standard Dashboards server options
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=5601
+
+    ports:
+      - "5601:5601"
+
+    volumes:
+      - opensearch-dashboards_data:/usr/share/opensearch-dashboards/data
+      - ./certs/opensearch:/usr/share/opensearch-dashboards/config/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-taxi-network
+    depends_on:
+      - opensearch
+
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-taxi-network
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-taxi-network
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  kafka_data:
+  opensearch_data:
+  opensearch-dashboards_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  ai-taxi-network:
+    driver: bridge
+

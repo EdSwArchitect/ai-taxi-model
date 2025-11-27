@@ -1,0 +1,91 @@
+plugins {
+    id 'java'
+    id 'java-library'
+}
+
+group = 'com.bscllc'
+version = '1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
+    // Configure toolchain to use Java 24 for compilation
+    // Will use system Java 24 if available, otherwise will try to download
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Log4j2 API
+    implementation "org.apache.logging.log4j:log4j-api:${log4jVersion}"
+    
+    // Log4j2 Core
+    implementation "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+    
+    // SLF4J API
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    
+    // SLF4J to Log4j2 bridge
+    implementation "org.apache.logging.log4j:log4j-slf4j2-impl:${log4jVersion}"
+    
+    // Jackson for JSON transformation
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:${jacksonVersion}"
+    
+    // Apache Parquet for reading Parquet files
+    implementation "org.apache.parquet:parquet-column:${parquetVersion}"
+    implementation "org.apache.parquet:parquet-common:${parquetVersion}"
+    implementation "org.apache.parquet:parquet-avro:${parquetVersion}"
+    
+    // Apache Avro
+    implementation "org.apache.avro:avro:${avroVersion}"
+    
+    // Apache Hadoop
+    implementation("org.apache.hadoop:hadoop-common:${hadoopVersion}") {
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+        exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    }
+    implementation("org.apache.hadoop:hadoop-mapreduce-client-core:${hadoopVersion}") {
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+        exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    }
+    
+    // JUnit 5 for testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+    useJUnitPlatform()
+    
+    // Java 24 compatibility options
+    jvmArgs = [
+        '--enable-native-access=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang=ALL-UNNAMED',
+        '--add-opens=java.base/java.util=ALL-UNNAMED',
+        '--add-opens=java.base/java.security=ALL-UNNAMED',
+        '--add-opens=java.base/javax.security.auth=ALL-UNNAMED'
+    ]
+    
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // Use sourceCompatibility/targetCompatibility instead of release for Java 24
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+}
+
