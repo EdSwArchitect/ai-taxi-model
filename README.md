@@ -9,13 +9,15 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **Schema Validation**: Automatic validation of Parquet file schemas
 - **JSON Support**: Full JSON serialization/deserialization support using Jackson
 - **Type-Safe Enums**: Enum classes for VendorID, RatecodeID, and TripType
+- **Quarkus Service**: Automated file monitoring and indexing to OpenSearch
+- **OpenSearch Integration**: Bulk indexing of taxi trip data
+- **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
 - **Comprehensive Testing**: Full test coverage with JUnit 5
 
 ## Requirements
 
 - Java 24
-- Maven 3.6+ (for Maven builds)
-- Gradle 8.11+ (for Gradle builds, optional)
+- Maven 3.6+
 
 ## Project Structure
 
@@ -31,26 +33,27 @@ ai-taxi-model/
 │   │   │       │   ├── VendorID.java
 │   │   │       │   ├── RatecodeID.java
 │   │   │       │   └── TripType.java
-│   │   │       └── input/              # Parquet file readers
-│   │   │           ├── YellowReader.java
-│   │   │           └── GreenReader.java
+│   │   │       ├── input/              # Parquet file readers
+│   │   │       │   ├── YellowReader.java
+│   │   │       │   └── GreenReader.java
+│   │   │       └── service/            # Quarkus services
+│   │   │           ├── TaxiMonitor.java
+│   │   │           └── OpenSearchService.java
 │   │   └── resources/
-│   │       └── log4j2.xml              # Logging configuration
+│   │       ├── log4j2.xml              # Logging configuration
+│   │       └── application.properties  # Quarkus configuration
 │   └── test/
 │       ├── java/                        # Test classes
 │       └── resources/
 │           ├── log4j2.xml              # Test logging configuration
 │           ├── yellow_tripdata_2025_01.parquet
 │           └── green_tripdata_2025_01.parquet
-├── pom.xml                              # Maven configuration
-├── build.gradle                         # Gradle configuration
-├── settings.gradle                      # Gradle settings
-├── gradle.properties                   # Gradle properties
-└── gradlew                              # Gradle wrapper (Unix)
+└── pom.xml                              # Maven configuration
 ```
 
 ## Dependencies
 
+- **Quarkus** (3.27.1) - Java framework for building cloud-native applications
 - **Log4j2** (2.23.1) - Logging framework
 - **SLF4J** (2.0.16) - Logging facade with Log4j2 bridge
 - **Jackson** (2.18.1) - JSON processing
@@ -58,6 +61,7 @@ ai-taxi-model/
 - **Apache Parquet** (1.14.3) - Parquet file reading
 - **Apache Avro** (1.11.3) - Data serialization
 - **Apache Hadoop** (3.3.6) - File system support for Parquet
+- **OpenSearch REST Client** - OpenSearch Java client for indexing data
 
 ## Building the Project
 
@@ -87,33 +91,32 @@ mvn test -Dtest=YellowReaderTest#testReadYellowTripData2025_01
 mvn clean package
 ```
 
-### Using Gradle
-
-#### Compile
+#### Run Quarkus Service
 
 ```bash
-./gradlew clean build -x test
+mvn quarkus:dev
 ```
 
-#### Run Tests
+Or run the packaged JAR:
 
 ```bash
-./gradlew test
+java -jar target/ai-text-model-1.0-SNAPSHOT.jar
 ```
 
-#### Run Specific Test
+## Docker Setup
+
+The project includes a Docker Compose configuration for running supporting services. See [README-DOCKER.md](README-DOCKER.md) for detailed instructions.
+
+Quick start:
 
 ```bash
-./gradlew test --tests "YellowReaderTest.testReadYellowTripData2025_01"
+# Start all services (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
+docker-compose up -d
+
+# Or with TLS enabled
+./scripts/generate-certs.sh
+docker-compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 ```
-
-#### Package
-
-```bash
-./gradlew clean build
-```
-
-**Note**: Gradle requires Java 24 to be available in your system. The Gradle daemon itself can run on Java 21+, but the project will compile using Java 24 toolchain.
 
 ## Usage Examples
 
@@ -274,6 +277,48 @@ Example file names:
 - `yellow_tripdata_2025_01.parquet`
 - `green_tripdata_2025_01.parquet`
 
+## Quarkus Service
+
+The `TaxiMonitor` service automatically monitors a directory for Parquet files and indexes them to OpenSearch.
+
+### Configuration
+
+Edit `src/main/resources/application.properties`:
+
+```properties
+# Directory to monitor for Parquet files
+taxi.monitor.input.dir=./data/input
+
+# Directory for files that fail processing
+taxi.monitor.error.dir=./data/error
+
+# OpenSearch connection
+opensearch.host=localhost
+opensearch.port=9200
+opensearch.scheme=http
+opensearch.username=admin
+opensearch.password=SuperSecret123!
+```
+
+### How It Works
+
+1. **File Monitoring**: The service periodically scans the input directory for new Parquet files
+2. **Schema Detection**: Automatically detects whether files match Yellow Taxi or Green Taxi schemas
+3. **Processing**: Converts Parquet records to `YellowTaxi` or `GreenTaxi` objects
+4. **Indexing**: Bulk indexes records to OpenSearch indices (`yellowtaxi` or `greentaxi`)
+5. **Error Handling**: Moves non-Parquet files or schema-mismatched files to the error directory
+
+### Running the Service
+
+```bash
+# Development mode (with hot reload)
+mvn quarkus:dev
+
+# Production mode
+mvn clean package
+java -jar target/quarkus-app/quarkus-run.jar
+```
+
 ## Logging
 
 The project uses Log4j2 for logging with SLF4J bridge support.
@@ -282,17 +327,36 @@ The project uses Log4j2 for logging with SLF4J bridge support.
 - Application loggers: INFO level
 - Third-party loggers: WARN level
 
-**Test Configuration**: `src/test/resources/log4j2.xml`
+**Test Configuration**: `src/test/resources/log4j2-test.xml`
 - Application loggers: DEBUG level (more verbose for tests)
 - Third-party loggers: WARN level
+
+**Quarkus Logging**: Configured in `application.properties`
+- Default: INFO level
+- Application packages: DEBUG level
 
 ## License
 
 This project is part of the AI Playground workspace.
+
+## Infrastructure
+
+The project includes Docker Compose configuration for:
+
+- **PostgreSQL 15**: Relational database
+- **Kafka (KRaft)**: Event streaming platform
+- **OpenSearch 3.3.2**: Search and analytics engine
+- **OpenSearch Dashboards 3.3.2**: Visualization UI
+- **Prometheus**: Metrics collection
+- **Grafana 12.3.0**: Metrics visualization
+
+See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions, including TLS configuration with self-signed certificates.
 
 ## References
 
 - [NYC TLC Trip Record Data](http://www.nyc.gov/html/tlc/html/about/trip_record_data.shtml)
 - [Yellow Taxi Data Dictionary](https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_yellow.pdf)
 - [Green Taxi Data Dictionary](https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_green.pdf)
+- [Quarkus Documentation](https://quarkus.io/)
+- [OpenSearch Documentation](https://opensearch.org/docs/)
 
