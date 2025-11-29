@@ -11,19 +11,19 @@ import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.action.bulk.BulkRequest;
-import org.opensearch.action.bulk.BulkResponse;
-import org.opensearch.action.index.IndexRequest;
-import org.opensearch.client.RequestOptions;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestClientBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
 
 /**
  * Service for interacting with OpenSearch.
@@ -33,9 +33,52 @@ public class OpenSearchService {
 
     private static final Logger logger = LogManager.getLogger(OpenSearchService.class);
 
+    @Inject
+    MeterRegistry meterRegistry;
+
     private RestClient restClient;
     private final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule());
+
+    // Micrometer metrics
+    private Counter documentsIndexedCounter;
+    private Counter yellowTaxiDocumentsCounter;
+    private Counter greenTaxiDocumentsCounter;
+    private Counter indexingErrorsCounter;
+    private Counter bulkOperationsCounter;
+    private Counter yellowTaxiBulkOperationsCounter;
+    private Counter greenTaxiBulkOperationsCounter;
+
+    @PostConstruct
+    void initMetrics() {
+        documentsIndexedCounter = Counter.builder("opensearch.documents.indexed")
+                .description("Total number of documents indexed to OpenSearch")
+                .register(meterRegistry);
+        
+        yellowTaxiDocumentsCounter = Counter.builder("opensearch.yellow.documents")
+                .description("Number of yellow taxi documents indexed")
+                .register(meterRegistry);
+        
+        greenTaxiDocumentsCounter = Counter.builder("opensearch.green.documents")
+                .description("Number of green taxi documents indexed")
+                .register(meterRegistry);
+        
+        indexingErrorsCounter = Counter.builder("opensearch.indexing.errors")
+                .description("Number of indexing errors")
+                .register(meterRegistry);
+        
+        bulkOperationsCounter = Counter.builder("opensearch.bulk.operations")
+                .description("Number of bulk index operations (can represent files processed)")
+                .register(meterRegistry);
+        
+        yellowTaxiBulkOperationsCounter = Counter.builder("opensearch.yellow.bulk.operations")
+                .description("Number of bulk index operations for yellow taxi")
+                .register(meterRegistry);
+        
+        greenTaxiBulkOperationsCounter = Counter.builder("opensearch.green.bulk.operations")
+                .description("Number of bulk index operations for green taxi")
+                .register(meterRegistry);
+    }
 
     void onStart(@Observes StartupEvent ev) {
         String host = System.getProperty("opensearch.host", "localhost");
@@ -97,12 +140,25 @@ public class OpenSearchService {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
                     logger.info("Bulk index operation successful: {} items indexed", documents.size());
+                    
+                    // Update metrics
+                    bulkOperationsCounter.increment();
+                    documentsIndexedCounter.increment(documents.size());
+                    if ("yellowtaxi".equals(index)) {
+                        yellowTaxiBulkOperationsCounter.increment();
+                        yellowTaxiDocumentsCounter.increment(documents.size());
+                    } else if ("greentaxi".equals(index)) {
+                        greenTaxiBulkOperationsCounter.increment();
+                        greenTaxiDocumentsCounter.increment(documents.size());
+                    }
                 } else {
                     logger.warn("Bulk index operation had errors: {}", response.getStatusLine().getStatusCode());
+                    indexingErrorsCounter.increment();
                 }
             }
         } catch (Exception e) {
             logger.error("Error executing bulk index operation", e);
+            indexingErrorsCounter.increment();
             throw new RuntimeException("Failed to execute bulk index", e);
         }
     }
@@ -134,13 +190,24 @@ public class OpenSearchService {
                     Map<String, Object> result = objectMapper.readValue(responseBody, Map.class);
                     String id = (String) result.get("_id");
                     logger.debug("Indexed document to {} with ID: {}", index, id);
+                    
+                    // Update metrics
+                    documentsIndexedCounter.increment();
+                    if ("yellowtaxi".equals(index)) {
+                        yellowTaxiDocumentsCounter.increment();
+                    } else if ("greentaxi".equals(index)) {
+                        greenTaxiDocumentsCounter.increment();
+                    }
+                    
                     return id;
                 } else {
+                    indexingErrorsCounter.increment();
                     throw new IOException("Failed to index document: " + response.getStatusLine().getStatusCode());
                 }
             }
         } catch (Exception e) {
             logger.error("Error indexing document to {}", index, e);
+            indexingErrorsCounter.increment();
             throw new RuntimeException("Failed to index document", e);
         }
     }

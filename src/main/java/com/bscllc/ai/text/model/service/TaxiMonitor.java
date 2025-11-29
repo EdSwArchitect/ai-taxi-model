@@ -22,12 +22,14 @@ import org.apache.parquet.io.InputFile;
 import com.bscllc.ai.text.model.datamodel.GreenTaxi;
 import com.bscllc.ai.text.model.datamodel.YellowTaxi;
 import com.bscllc.ai.text.model.input.GreenReader;
-import com.bscllc.ai.text.model.input.GreenReader.SchemaValidationException;
 import com.bscllc.ai.text.model.input.YellowReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -45,6 +47,9 @@ public class TaxiMonitor {
     @Inject
     OpenSearchService openSearchService;
 
+    @Inject
+    MeterRegistry meterRegistry;
+
     private final GreenReader greenReader = new GreenReader();
     private final YellowReader yellowReader = new YellowReader();
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -52,6 +57,41 @@ public class TaxiMonitor {
 
     // Track processed files to avoid reprocessing
     private final Set<String> processedFiles = ConcurrentHashMap.newKeySet();
+
+    // Micrometer metrics
+    private Counter filesProcessedCounter;
+    private Counter yellowTaxiFilesCounter;
+    private Counter yellowTaxiRecordsCounter;
+    private Counter greenTaxiFilesCounter;
+    private Counter greenTaxiRecordsCounter;
+    private Counter erroredFilesCounter;
+
+    @PostConstruct
+    void initMetrics() {
+        filesProcessedCounter = Counter.builder("taxi.monitor.files.processed")
+                .description("Total number of files processed")
+                .register(meterRegistry);
+        
+        yellowTaxiFilesCounter = Counter.builder("taxi.monitor.yellow.files")
+                .description("Number of yellow taxi files processed")
+                .register(meterRegistry);
+        
+        yellowTaxiRecordsCounter = Counter.builder("taxi.monitor.yellow.records")
+                .description("Number of yellow taxi records processed")
+                .register(meterRegistry);
+        
+        greenTaxiFilesCounter = Counter.builder("taxi.monitor.green.files")
+                .description("Number of green taxi files processed")
+                .register(meterRegistry);
+        
+        greenTaxiRecordsCounter = Counter.builder("taxi.monitor.green.records")
+                .description("Number of green taxi records processed")
+                .register(meterRegistry);
+        
+        erroredFilesCounter = Counter.builder("taxi.monitor.files.errored")
+                .description("Number of files that failed processing")
+                .register(meterRegistry);
+    }
 
     /**
      * Scheduled task that monitors the input directory for new files.
@@ -106,6 +146,8 @@ public class TaxiMonitor {
             } catch (IOException e) {
                 logger.error("Failed to move file to error directory: {}", fileName, e);
             }
+            filesProcessedCounter.increment();
+            erroredFilesCounter.increment();
             processedFiles.add(file.toString());
             return;
         }
@@ -117,6 +159,8 @@ public class TaxiMonitor {
             if (schemaType == SchemaType.UNKNOWN) {
                 logger.warn("File {} does not match Green or Yellow taxi schema, moving to error directory", fileName);
                 moveToErrorDirectory(file, errorDir, "schema_mismatch");
+                filesProcessedCounter.increment();
+                erroredFilesCounter.increment();
                 processedFiles.add(file.toString());
                 return;
             }
@@ -124,10 +168,13 @@ public class TaxiMonitor {
             // Process based on schema type
             if (schemaType == SchemaType.GREEN) {
                 processGreenTaxiFile(file);
+                greenTaxiFilesCounter.increment();
             } else if (schemaType == SchemaType.YELLOW) {
                 processYellowTaxiFile(file);
+                yellowTaxiFilesCounter.increment();
             }
 
+            filesProcessedCounter.increment();
             processedFiles.add(file.toString());
             logger.info("Successfully processed file: {}", fileName);
 
@@ -138,6 +185,8 @@ public class TaxiMonitor {
             } catch (IOException ioException) {
                 logger.error("Failed to move file to error directory: {}", fileName, ioException);
             }
+            filesProcessedCounter.increment();
+            erroredFilesCounter.increment();
             processedFiles.add(file.toString());
         }
     }
@@ -262,6 +311,8 @@ public class TaxiMonitor {
                 openSearchService.bulkIndex("greentaxi", batch);
             }
 
+            // Update metrics
+            greenTaxiRecordsCounter.increment(count);
             logger.info("Indexed {} Green taxi records from file: {}", count, file.getFileName());
         }
     }
@@ -301,6 +352,8 @@ public class TaxiMonitor {
                 openSearchService.bulkIndex("yellowtaxi", batch);
             }
 
+            // Update metrics
+            yellowTaxiRecordsCounter.increment(count);
             logger.info("Indexed {} Yellow taxi records from file: {}", count, file.getFileName());
         }
     }

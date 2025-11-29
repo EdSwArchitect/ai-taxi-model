@@ -164,6 +164,18 @@
             <artifactId>quarkus-rest-jackson</artifactId>
         </dependency>
 
+        <!-- Quarkus Micrometer -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-micrometer</artifactId>
+        </dependency>
+
+        <!-- Quarkus Micrometer Prometheus Registry -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- OpenSearch Java Client -->
         <dependency>
             <groupId>org.opensearch.client</groupId>

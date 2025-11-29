@@ -125,6 +125,17 @@ When security is enabled:
 - Default username: `admin`
 - Default password: `admin` (change in production!)
 
+**Prometheus Metrics**:
+- OpenSearch exposes Prometheus metrics at `/_prometheus/metrics` endpoint
+- Requires the Prometheus exporter plugin to be installed
+- To install the plugin, run:
+  ```bash
+  docker exec -it opensearch ./bin/opensearch-plugin install \
+    https://github.com/opensearch-project/opensearch-prometheus-exporter/releases/download/3.3.2.0/prometheus-exporter-3.3.2.0.zip
+  docker-compose restart opensearch
+  ```
+- Prometheus is configured to scrape OpenSearch metrics automatically (see `prometheus/prometheus.yml`)
+
 ### OpenSearch Dashboards
 
 - **URL**: http://localhost:5601
@@ -142,6 +153,10 @@ When security is enabled:
 - **Default credentials**: admin/admin
 - **Prometheus datasource**: Pre-configured
 - **Dashboards**: Located in `grafana/dashboards/`
+  - **Taxi Monitor & OpenSearch Metrics Dashboard**: Automatically provisioned
+    - File processing metrics (files processed, records processed, errors)
+    - OpenSearch indexing metrics (documents indexed, bulk operations, errors)
+    - Real-time monitoring with 10-second refresh
 
 ## Environment Variables
 

@@ -32,11 +32,30 @@ scrape_configs:
 
   # OpenSearch metrics
   - job_name: 'opensearch'
+    scrape_interval: 15s
+    metrics_path: '/_prometheus/metrics'
     static_configs:
       - targets: ['opensearch:9200']
         labels:
           service: 'opensearch'
-    metrics_path: '/_prometheus/metrics'
+          application: 'opensearch'
+    # Basic authentication for OpenSearch (when security is enabled)
+    basic_auth:
+      username: 'admin'
+      password: 'SuperSecret123!'
+    # Skip TLS verification if using self-signed certificates
+    tls_config:
+      insecure_skip_verify: true
+
+  # Quarkus Taxi Monitor Service
+  - job_name: 'taxi-monitor'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          service: 'taxi-monitor'
+          application: 'ai-taxi-model'
+    metrics_path: '/q/metrics'
+    scrape_interval: 15s
 
   # PostgreSQL exporter (if added)
   # - job_name: 'postgres'
