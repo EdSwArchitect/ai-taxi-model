@@ -72,7 +72,8 @@ services:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=SuperSecret123!
+#      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=SuperSecret123!
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin
 
       # Security plugin on
       - plugins.security.disabled=false
@@ -123,7 +124,7 @@ services:
       - "9200:9200"  # HTTP
       - "9600:9600"  # Performance Analyzer
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -u admin:admin -k -f https://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -132,14 +133,15 @@ services:
 
   # OpenSearch Dashboards
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:3.3.2
+    image: opensearchproject/opensearch-dashboards:3.3.0
     container_name: opensearch-dashboards
     environment:
-      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
-      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=${OPENSEARCH_DISABLE_SECURITY:-true}
+      - 'OPENSEARCH_HOSTS=["https://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=false
       - OPENSEARCH_USERNAME=admin
       - OPENSEARCH_PASSWORD=admin
       - OPENSEARCH_SSL_VERIFICATIONMODE=none
+      - OPENSEARCH_SSL_CERTIFICATE_AUTHORITIES=/usr/share/opensearch-dashboards/config/certs/root-ca.pem
 
       # Standard Dashboards server options
       - SERVER_HOST=0.0.0.0
@@ -152,7 +154,7 @@ services:
       - opensearch-dashboards_data:/usr/share/opensearch-dashboards/data
       - ./certs/opensearch:/usr/share/opensearch-dashboards/config/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      test: ["CMD-SHELL", "curl -u admin:admin -k -f http://localhost:5601/api/status || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

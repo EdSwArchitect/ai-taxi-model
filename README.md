@@ -11,6 +11,7 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **Type-Safe Enums**: Enum classes for VendorID, RatecodeID, and TripType
 - **Quarkus Service**: Automated file monitoring and indexing to OpenSearch
 - **OpenSearch Integration**: Bulk indexing of taxi trip data
+- **Metrics & Monitoring**: Micrometer metrics with Prometheus export and Grafana dashboards
 - **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
 - **Comprehensive Testing**: Full test coverage with JUnit 5
 
@@ -62,6 +63,7 @@ ai-taxi-model/
 - **Apache Avro** (1.11.3) - Data serialization
 - **Apache Hadoop** (3.3.6) - File system support for Parquet
 - **OpenSearch REST Client** - OpenSearch Java client for indexing data
+- **Micrometer** (via Quarkus) - Metrics collection and Prometheus export
 
 ## Building the Project
 
@@ -279,7 +281,26 @@ Example file names:
 
 ## Quarkus Service
 
-The `TaxiMonitor` service automatically monitors a directory for Parquet files and indexes them to OpenSearch.
+The `TaxiMonitor` and `OpenSearchService` work together to automatically monitor a directory for Parquet files and index them to OpenSearch.
+
+### Prerequisites
+
+1. **OpenSearch must be running**:
+   ```bash
+   # Start OpenSearch using Docker Compose
+   docker-compose up -d opensearch
+   
+   # Verify OpenSearch is accessible
+   curl -u admin:admin -k https://localhost:9200/_cluster/health
+   # Or if using HTTP (no TLS):
+   curl http://localhost:9200/_cluster/health
+   ```
+
+2. **Create input and error directories**:
+   ```bash
+   mkdir -p ./data/input
+   mkdir -p ./data/error
+   ```
 
 ### Configuration
 
@@ -295,29 +316,125 @@ taxi.monitor.error.dir=./data/error
 # OpenSearch connection
 opensearch.host=localhost
 opensearch.port=9200
-opensearch.scheme=http
+opensearch.scheme=https          # Use 'https' if OpenSearch has TLS enabled, 'http' otherwise
 opensearch.username=admin
-opensearch.password=SuperSecret123!
+opensearch.password=admin        # Change to match your OpenSearch password
 ```
+
+**Note**: If OpenSearch is running with TLS/SSL enabled (default in docker-compose.yml), set `opensearch.scheme=https`. For HTTP-only setups, use `opensearch.scheme=http`.
 
 ### How It Works
 
-1. **File Monitoring**: The service periodically scans the input directory for new Parquet files
-2. **Schema Detection**: Automatically detects whether files match Yellow Taxi or Green Taxi schemas
-3. **Processing**: Converts Parquet records to `YellowTaxi` or `GreenTaxi` objects
-4. **Indexing**: Bulk indexes records to OpenSearch indices (`yellowtaxi` or `greentaxi`)
-5. **Error Handling**: Moves non-Parquet files or schema-mismatched files to the error directory
+1. **TaxiMonitor Service**:
+   - Monitors the input directory every 30 seconds for new Parquet files
+   - Automatically detects whether files match Yellow Taxi or Green Taxi schemas
+   - Converts Parquet records to `YellowTaxi` or `GreenTaxi` objects
+   - Moves non-Parquet files or schema-mismatched files to the error directory
+
+2. **OpenSearchService**:
+   - Handles connections to OpenSearch with authentication and optional TLS
+   - Performs bulk indexing operations for efficient data loading
+   - Tracks indexing metrics (documents indexed, errors, bulk operations)
+
+3. **Processing Flow**:
+   - Files are processed in batches of 1000 records
+   - Records are indexed to `yellowtaxi` or `greentaxi` indices based on schema
+   - Processed files are tracked to avoid reprocessing
 
 ### Running the Service
 
-```bash
-# Development mode (with hot reload)
-mvn quarkus:dev
+#### Development Mode (Recommended for Testing)
 
-# Production mode
+```bash
+# Start the service with hot reload
+mvn quarkus:dev
+```
+
+The service will:
+- Start on port 8080
+- Monitor `./data/input` directory every 30 seconds
+- Expose metrics at `http://localhost:8080/q/metrics`
+- Automatically reload on code changes
+
+#### Production Mode
+
+```bash
+# Build the application
 mvn clean package
+
+# Run the packaged JAR
 java -jar target/quarkus-app/quarkus-run.jar
 ```
+
+### Testing the Service
+
+1. **Place a Parquet file in the input directory**:
+   ```bash
+   # Copy a test file to the input directory
+   cp src/test/resources/yellow_tripdata_2025_01.parquet ./data/input/
+   # Or
+   cp src/test/resources/green_tripdata_2025_01.parquet ./data/input/
+   ```
+
+2. **Monitor the logs**:
+   ```bash
+   # Watch for processing messages
+   # You should see logs like:
+   # "Processing file: yellow_tripdata_2025_01.parquet"
+   # "Processing Yellow taxi file: yellow_tripdata_2025_01.parquet"
+   # "Indexed X Yellow taxi records from file: yellow_tripdata_2025_01.parquet"
+   ```
+
+3. **Verify data in OpenSearch**:
+   ```bash
+   # Check if indices were created
+   curl -u admin:admin -k https://localhost:9200/_cat/indices?v
+   
+   # Query yellow taxi data
+   curl -u admin:admin -k https://localhost:9200/yellowtaxi/_search?size=5
+   
+   # Query green taxi data
+   curl -u admin:admin -k https://localhost:9200/greentaxi/_search?size=5
+   ```
+
+4. **Check metrics**:
+   ```bash
+   # View Prometheus metrics
+   curl http://localhost:8080/q/metrics | grep taxi_monitor
+   curl http://localhost:8080/q/metrics | grep opensearch
+   ```
+
+### Service Components
+
+#### TaxiMonitor
+- **Purpose**: Monitors directory and processes Parquet files
+- **Schedule**: Runs every 30 seconds (`@Scheduled(every = "30s")`)
+- **Metrics**: Tracks files processed, records processed, and errors
+- **Location**: `com.bscllc.ai.text.model.service.TaxiMonitor`
+
+#### OpenSearchService
+- **Purpose**: Manages OpenSearch connections and indexing
+- **Features**: Bulk indexing, error handling, metrics tracking
+- **Location**: `com.bscllc.ai.text.model.service.OpenSearchService`
+
+### Troubleshooting
+
+**Service won't start**:
+- Verify OpenSearch is running and accessible
+- Check OpenSearch credentials in `application.properties`
+- Ensure input/error directories exist
+
+**Files not being processed**:
+- Check that files are `.parquet` format
+- Verify files match Yellow or Green taxi schemas
+- Check error directory for moved files
+- Review service logs for error messages
+
+**Connection errors to OpenSearch**:
+- Verify OpenSearch is running: `curl -u admin:admin -k https://localhost:9200/_cluster/health`
+- Check `opensearch.scheme` matches your OpenSearch configuration (http vs https)
+- Verify username and password are correct
+- If using HTTPS, ensure certificates are properly configured
 
 ## Logging
 
@@ -335,6 +452,57 @@ The project uses Log4j2 for logging with SLF4J bridge support.
 - Default: INFO level
 - Application packages: DEBUG level
 
+## Metrics & Monitoring
+
+The project includes comprehensive metrics collection using Micrometer and Prometheus.
+
+### Metrics Endpoint
+
+The Quarkus service exposes Prometheus metrics at:
+- **URL**: `http://localhost:8080/q/metrics`
+- **Format**: Prometheus text format
+
+### Available Metrics
+
+#### TaxiMonitor Metrics
+- `taxi_monitor_files_processed_total` - Total files processed
+- `taxi_monitor_yellow_files_total` - Yellow taxi files processed
+- `taxi_monitor_yellow_records_total` - Yellow taxi records processed
+- `taxi_monitor_green_files_total` - Green taxi files processed
+- `taxi_monitor_green_records_total` - Green taxi records processed
+- `taxi_monitor_files_errored_total` - Files that failed processing
+
+#### OpenSearchService Metrics
+- `opensearch_documents_indexed_total` - Total documents indexed
+- `opensearch_yellow_documents_total` - Yellow taxi documents indexed
+- `opensearch_green_documents_total` - Green taxi documents indexed
+- `opensearch_bulk_operations_total` - Bulk index operations
+- `opensearch_yellow_bulk_operations_total` - Yellow taxi bulk operations
+- `opensearch_green_bulk_operations_total` - Green taxi bulk operations
+- `opensearch_indexing_errors_total` - Indexing errors
+
+### Prometheus Integration
+
+Prometheus is configured to scrape metrics from:
+- **Taxi Monitor Service**: `host.docker.internal:8080/q/metrics`
+- **OpenSearch**: `opensearch:9200/_prometheus/metrics` (requires Prometheus exporter plugin)
+
+See `prometheus/prometheus.yml` for full configuration.
+
+### Grafana Dashboard
+
+A pre-configured Grafana dashboard is available with:
+- File processing metrics (rate and totals)
+- Record processing metrics by taxi type
+- OpenSearch indexing metrics
+- Error tracking
+- Real-time monitoring with 10-second refresh
+
+**Access**: http://localhost:3000 (admin/admin)
+**Dashboard**: "Taxi Monitor & OpenSearch Metrics"
+
+See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions.
+
 ## License
 
 This project is part of the AI Playground workspace.
@@ -346,7 +514,7 @@ The project includes Docker Compose configuration for:
 - **PostgreSQL 15**: Relational database
 - **Kafka (KRaft)**: Event streaming platform
 - **OpenSearch 3.3.2**: Search and analytics engine
-- **OpenSearch Dashboards 3.3.2**: Visualization UI
+- **OpenSearch Dashboards 3.3.0**: Visualization UI
 - **Prometheus**: Metrics collection
 - **Grafana 12.3.0**: Metrics visualization
 
@@ -359,4 +527,7 @@ See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions, includ
 - [Green Taxi Data Dictionary](https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_green.pdf)
 - [Quarkus Documentation](https://quarkus.io/)
 - [OpenSearch Documentation](https://opensearch.org/docs/)
+- [Micrometer Documentation](https://micrometer.io/)
+- [Prometheus Documentation](https://prometheus.io/docs/)
+- [Grafana Documentation](https://grafana.com/docs/)
 

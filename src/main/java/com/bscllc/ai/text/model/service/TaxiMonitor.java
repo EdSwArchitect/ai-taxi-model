@@ -102,6 +102,10 @@ public class TaxiMonitor {
         String inputDir = System.getProperty("taxi.monitor.input.dir", "./data/input");
         String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
 
+        logger.info("Input path: {}", Path.of(inputDir).toAbsolutePath().normalize().toString());
+        logger.info("Error path: {}", Path.of(errorDir).toAbsolutePath().normalize().toString());
+
+
         Path inputPath = Paths.get(inputDir);
         Path errorPath = Paths.get(errorDir);
 
@@ -303,6 +307,12 @@ public class TaxiMonitor {
                     }
                 } catch (Exception e) {
                     logger.error("Error serializing GreenTaxi to JSON", e);
+                    String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
+
+                    Path errorPath = Paths.get(errorDir);
+
+                    moveToErrorDirectory(file,  errorPath, "not_parquet");
+                    return;
                 }
             }
 
@@ -344,6 +354,12 @@ public class TaxiMonitor {
                     }
                 } catch (Exception e) {
                     logger.error("Error serializing YellowTaxi to JSON", e);
+                    String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
+
+                    Path errorPath = Paths.get(errorDir);
+
+                    moveToErrorDirectory(file,  errorPath, "not_parquet");
+                    return;
                 }
             }
 

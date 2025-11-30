@@ -33,6 +33,7 @@ scrape_configs:
   # OpenSearch metrics
   - job_name: 'opensearch'
     scrape_interval: 15s
+    scheme: https
     metrics_path: '/_prometheus/metrics'
     static_configs:
       - targets: ['opensearch:9200']
@@ -42,7 +43,7 @@ scrape_configs:
     # Basic authentication for OpenSearch (when security is enabled)
     basic_auth:
       username: 'admin'
-      password: 'SuperSecret123!'
+      password: 'admin'
     # Skip TLS verification if using self-signed certificates
     tls_config:
       insecure_skip_verify: true
