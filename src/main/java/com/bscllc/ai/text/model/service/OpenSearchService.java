@@ -23,6 +23,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 
 /**
@@ -34,7 +35,9 @@ public class OpenSearchService {
     private static final Logger logger = LogManager.getLogger(OpenSearchService.class);
 
     @Inject
-    MeterRegistry meterRegistry;
+    Instance<MeterRegistry> meterRegistryInstance;
+    
+    private MeterRegistry meterRegistry;
 
     private RestClient restClient;
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -51,6 +54,14 @@ public class OpenSearchService {
 
     @PostConstruct
     void initMetrics() {
+        // Get MeterRegistry from CDI instance (handles cases where it might not be available)
+        if (meterRegistryInstance.isResolvable()) {
+            meterRegistry = meterRegistryInstance.get();
+        } else {
+            logger.warn("MeterRegistry is not available. Metrics will not be collected.");
+            return;
+        }
+        
         documentsIndexedCounter = Counter.builder("opensearch.documents.indexed")
                 .description("Total number of documents indexed to OpenSearch")
                 .register(meterRegistry);
@@ -141,24 +152,30 @@ public class OpenSearchService {
                     response.getStatusLine().getStatusCode() < 300) {
                     logger.info("Bulk index operation successful: {} items indexed", documents.size());
                     
-                    // Update metrics
-                    bulkOperationsCounter.increment();
-                    documentsIndexedCounter.increment(documents.size());
-                    if ("yellowtaxi".equals(index)) {
-                        yellowTaxiBulkOperationsCounter.increment();
-                        yellowTaxiDocumentsCounter.increment(documents.size());
-                    } else if ("greentaxi".equals(index)) {
-                        greenTaxiBulkOperationsCounter.increment();
-                        greenTaxiDocumentsCounter.increment(documents.size());
+                    // Update metrics (if available)
+                    if (meterRegistry != null) {
+                        bulkOperationsCounter.increment();
+                        documentsIndexedCounter.increment(documents.size());
+                        if ("yellowtaxi".equals(index)) {
+                            yellowTaxiBulkOperationsCounter.increment();
+                            yellowTaxiDocumentsCounter.increment(documents.size());
+                        } else if ("greentaxi".equals(index)) {
+                            greenTaxiBulkOperationsCounter.increment();
+                            greenTaxiDocumentsCounter.increment(documents.size());
+                        }
                     }
                 } else {
                     logger.warn("Bulk index operation had errors: {}", response.getStatusLine().getStatusCode());
-                    indexingErrorsCounter.increment();
+                    if (meterRegistry != null) {
+                        indexingErrorsCounter.increment();
+                    }
                 }
             }
         } catch (Exception e) {
             logger.error("Error executing bulk index operation", e);
-            indexingErrorsCounter.increment();
+            if (meterRegistry != null) {
+                indexingErrorsCounter.increment();
+            }
             throw new RuntimeException("Failed to execute bulk index", e);
         }
     }
@@ -191,23 +208,29 @@ public class OpenSearchService {
                     String id = (String) result.get("_id");
                     logger.debug("Indexed document to {} with ID: {}", index, id);
                     
-                    // Update metrics
-                    documentsIndexedCounter.increment();
-                    if ("yellowtaxi".equals(index)) {
-                        yellowTaxiDocumentsCounter.increment();
-                    } else if ("greentaxi".equals(index)) {
-                        greenTaxiDocumentsCounter.increment();
+                    // Update metrics (if available)
+                    if (meterRegistry != null) {
+                        documentsIndexedCounter.increment();
+                        if ("yellowtaxi".equals(index)) {
+                            yellowTaxiDocumentsCounter.increment();
+                        } else if ("greentaxi".equals(index)) {
+                            greenTaxiDocumentsCounter.increment();
+                        }
                     }
                     
                     return id;
                 } else {
-                    indexingErrorsCounter.increment();
+                    if (meterRegistry != null) {
+                        indexingErrorsCounter.increment();
+                    }
                     throw new IOException("Failed to index document: " + response.getStatusLine().getStatusCode());
                 }
             }
         } catch (Exception e) {
             logger.error("Error indexing document to {}", index, e);
-            indexingErrorsCounter.increment();
+            if (meterRegistry != null) {
+                indexingErrorsCounter.increment();
+            }
             throw new RuntimeException("Failed to index document", e);
         }
     }

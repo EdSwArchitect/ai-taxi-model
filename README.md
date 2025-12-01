@@ -13,7 +13,7 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **OpenSearch Integration**: Bulk indexing of taxi trip data
 - **Metrics & Monitoring**: Micrometer metrics with Prometheus export and Grafana dashboards
 - **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
-- **Comprehensive Testing**: Full test coverage with JUnit 5
+- **Comprehensive Testing**: Full test coverage with JUnit 5 and Mockito
 
 ## Requirements
 
@@ -59,6 +59,7 @@ ai-taxi-model/
 - **SLF4J** (2.0.16) - Logging facade with Log4j2 bridge
 - **Jackson** (2.18.1) - JSON processing
 - **JUnit 5** (5.10.2) - Testing framework
+- **Mockito** (5.11.0) - Mocking framework for unit tests
 - **Apache Parquet** (1.14.3) - Parquet file reading
 - **Apache Avro** (1.11.3) - Data serialization
 - **Apache Hadoop** (3.3.6) - File system support for Parquet
@@ -262,10 +263,46 @@ The project includes comprehensive test coverage:
 - **Reader Tests**: File reading, schema validation, error handling
 - **Enum Tests**: Code conversion, validation, edge cases
 - **JSON Tests**: Serialization, deserialization, round-trip testing
+- **Service Tests**: TaxiMonitor and OpenSearchService integration tests
+
+### Test Coverage
+
+#### TaxiMonitor Tests
+The `TaxiMonitorTest` class provides comprehensive coverage for the file monitoring service:
+
+- **Valid Schema Tests**:
+  - Processing valid Green taxi Parquet files
+  - Processing valid Yellow taxi Parquet files
+  - Processing both Green and Yellow files together
+  - File reprocessing prevention (files are not processed twice)
+
+- **Invalid Schema Tests**:
+  - Rejecting Parquet files that don't match Yellow or Green taxi schemas
+  - Moving invalid schema files to error directory with `schema_mismatch` suffix
+  - Handling multiple invalid schema files
+  - Mixing valid and invalid schema files in the same directory
+
+- **Metrics Verification**:
+  - Files processed counter
+  - Records processed counters (by taxi type)
+  - Error file counters
+  - OpenSearch indexing verification
+
+#### Running Tests
 
 Run all tests:
 ```bash
 mvn test
+```
+
+Run specific test class:
+```bash
+mvn test -Dtest=TaxiMonitorTest
+```
+
+Run specific test method:
+```bash
+mvn test -Dtest=TaxiMonitorTest#testProcessGoodGreenParquetFile
 ```
 
 ## Data Files
@@ -346,8 +383,11 @@ opensearch.password=admin        # Change to match your OpenSearch password
 #### Development Mode (Recommended for Testing)
 
 ```bash
-# Start the service with hot reload
+# Start the service with hot reload (uses dev profile automatically)
 mvn quarkus:dev
+
+# Or explicitly specify dev profile
+mvn quarkus:dev -Dquarkus.profile=dev
 ```
 
 The service will:
@@ -355,6 +395,12 @@ The service will:
 - Monitor `./data/input` directory every 30 seconds
 - Expose metrics at `http://localhost:8080/q/metrics`
 - Automatically reload on code changes
+- Use DEBUG logging level for detailed diagnostics
+
+**Development Profile Features**:
+- Verbose logging (DEBUG level)
+- Localhost OpenSearch connection
+- Local file paths for input/error directories
 
 #### Production Mode
 
@@ -362,9 +408,37 @@ The service will:
 # Build the application
 mvn clean package
 
-# Run the packaged JAR
+# Run with production profile
+java -jar target/quarkus-app/quarkus-run.jar -Dquarkus.profile=prod
+
+# Or set via environment variable
+export QUARKUS_PROFILE=prod
 java -jar target/quarkus-app/quarkus-run.jar
 ```
+
+**Production Profile Features**:
+- INFO level logging (less verbose)
+- Environment variable support for configuration
+- Production-optimized file paths (`/var/lib/taxi-monitor/`)
+- Configurable via environment variables:
+  - `OPENSEARCH_HOST` - OpenSearch hostname
+  - `OPENSEARCH_PORT` - OpenSearch port
+  - `OPENSEARCH_SCHEME` - http or https
+  - `OPENSEARCH_USERNAME` - OpenSearch username
+  - `OPENSEARCH_PASSWORD` - OpenSearch password
+  - `QUARKUS_HTTP_PORT` - HTTP server port
+
+#### Profile Configuration
+
+Quarkus profiles are configured in:
+- `application.properties` - Default configuration
+- `application-dev.properties` - Development profile
+- `application-prod.properties` - Production profile
+
+The active profile can be set via:
+- Command line: `-Dquarkus.profile=dev` or `-Dquarkus.profile=prod`
+- Environment variable: `QUARKUS_PROFILE=dev` or `QUARKUS_PROFILE=prod`
+- In `application.properties`: `quarkus.profile=dev` (not recommended for production)
 
 ### Testing the Service
 

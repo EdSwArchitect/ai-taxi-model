@@ -307,12 +307,12 @@ public class TaxiMonitor {
                     }
                 } catch (Exception e) {
                     logger.error("Error serializing GreenTaxi to JSON", e);
-                    String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
+                    // String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
 
-                    Path errorPath = Paths.get(errorDir);
+                    // Path errorPath = Paths.get(errorDir);
 
-                    moveToErrorDirectory(file,  errorPath, "not_parquet");
-                    return;
+                    // moveToErrorDirectory(file,  errorPath, "not_parquet");
+                    // return;
                 }
             }
 
@@ -354,12 +354,12 @@ public class TaxiMonitor {
                     }
                 } catch (Exception e) {
                     logger.error("Error serializing YellowTaxi to JSON", e);
-                    String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
+                    // String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
 
-                    Path errorPath = Paths.get(errorDir);
+                    // Path errorPath = Paths.get(errorDir);
 
-                    moveToErrorDirectory(file,  errorPath, "not_parquet");
-                    return;
+                    // moveToErrorDirectory(file,  errorPath, "not_parquet");
+                    // return;
                 }
             }
 
