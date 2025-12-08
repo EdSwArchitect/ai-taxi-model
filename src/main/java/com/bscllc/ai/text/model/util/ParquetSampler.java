@@ -9,7 +9,6 @@ import java.util.Random;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path as HadoopPath;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.parquet.avro.AvroParquetReader;
@@ -47,7 +46,7 @@ public class ParquetSampler {
         conf.set("fs.defaultFS", "file:///");
         conf.setBoolean("fs.file.impl.disable.cache", true);
 
-        HadoopPath sourceHadoopPath = new HadoopPath(sourceFile.toUri());
+        org.apache.hadoop.fs.Path sourceHadoopPath = new org.apache.hadoop.fs.Path(sourceFile.toUri());
         InputFile inputFile = HadoopInputFile.fromPath(sourceHadoopPath, conf);
 
         // Read first record to get schema
@@ -73,7 +72,7 @@ public class ParquetSampler {
         }
 
         // Create output file
-        HadoopPath targetHadoopPath = new HadoopPath(targetFile.toUri());
+        org.apache.hadoop.fs.Path targetHadoopPath = new org.apache.hadoop.fs.Path(targetFile.toUri());
         OutputFile outputFile = HadoopOutputFile.fromPath(targetHadoopPath, conf);
 
         // Sample and write records
