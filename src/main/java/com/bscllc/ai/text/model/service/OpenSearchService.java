@@ -19,11 +19,12 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.quarkus.arc.Arc;
+import io.quarkus.arc.ArcContainer;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
-import jakarta.inject.Inject;
 
 /**
  * Service for interacting with OpenSearch.
@@ -33,9 +34,7 @@ public class OpenSearchService {
 
     private static final Logger logger = LogManager.getLogger(OpenSearchService.class);
 
-    @Inject
-    MeterRegistry meterRegistry;
-
+    private MeterRegistry meterRegistry;
     private RestClient restClient;
     private volatile boolean metricsInitialized = false;
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -50,44 +49,68 @@ public class OpenSearchService {
     private Counter yellowTaxiBulkOperationsCounter;
     private Counter greenTaxiBulkOperationsCounter;
 
+    /**
+     * Lazily gets the MeterRegistry from CDI container if available.
+     * Returns null if CDI is not available or MeterRegistry bean is not found.
+     */
+    private MeterRegistry getMeterRegistry() {
+        if (meterRegistry != null) {
+            return meterRegistry;
+        }
+        
+        try {
+            ArcContainer container = Arc.container();
+            if (container != null) {
+                meterRegistry = container.instance(MeterRegistry.class).get();
+                return meterRegistry;
+            }
+        } catch (Exception e) {
+            logger.debug("MeterRegistry not available from CDI container", e);
+        }
+        
+        return null;
+    }
+    
     @PostConstruct
     void initMetrics() {
         try {
-            // Initialize metrics only if MeterRegistry is available
-            if (meterRegistry == null) {
-                logger.warn("MeterRegistry is not available. Metrics will not be collected.");
+            // Try to get MeterRegistry from CDI container
+            MeterRegistry registry = getMeterRegistry();
+            if (registry == null) {
+                logger.debug("MeterRegistry is not available. Metrics will not be collected.");
                 return;
             }
             
             documentsIndexedCounter = Counter.builder("opensearch.documents.indexed")
                     .description("Total number of documents indexed to OpenSearch")
-                    .register(meterRegistry);
+                    .register(registry);
             
             yellowTaxiDocumentsCounter = Counter.builder("opensearch.yellow.documents")
                     .description("Number of yellow taxi documents indexed")
-                    .register(meterRegistry);
+                    .register(registry);
             
             greenTaxiDocumentsCounter = Counter.builder("opensearch.green.documents")
                     .description("Number of green taxi documents indexed")
-                    .register(meterRegistry);
+                    .register(registry);
             
             indexingErrorsCounter = Counter.builder("opensearch.indexing.errors")
                     .description("Number of indexing errors")
-                    .register(meterRegistry);
+                    .register(registry);
             
             bulkOperationsCounter = Counter.builder("opensearch.bulk.operations")
                     .description("Number of bulk index operations (can represent files processed)")
-                    .register(meterRegistry);
+                    .register(registry);
             
             yellowTaxiBulkOperationsCounter = Counter.builder("opensearch.yellow.bulk.operations")
                     .description("Number of bulk index operations for yellow taxi")
-                    .register(meterRegistry);
+                    .register(registry);
             
             greenTaxiBulkOperationsCounter = Counter.builder("opensearch.green.bulk.operations")
                     .description("Number of bulk index operations for green taxi")
-                    .register(meterRegistry);
+                    .register(registry);
             
             metricsInitialized = true;
+            logger.debug("Metrics initialized successfully");
         } catch (Exception e) {
             logger.warn("Failed to initialize metrics. Metrics will not be collected.", e);
             metricsInitialized = false;
