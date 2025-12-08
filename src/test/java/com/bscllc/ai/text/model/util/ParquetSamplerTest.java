@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -46,8 +47,8 @@ class ParquetSamplerTest {
         ParquetSampler.sampleParquetFile(sourceFile, targetFile, 600000);
         
         // Verify file was created
-        assert Files.exists(targetFile) : "Sample file should be created";
-        assert Files.size(targetFile) > 0 : "Sample file should not be empty";
+        assertTrue(Files.exists(targetFile), "Sample file should be created");
+        assertTrue(Files.size(targetFile) > 0, "Sample file should not be empty");
         
         System.out.println("Successfully created sample file: " + targetFile);
         System.out.println("File size: " + Files.size(targetFile) + " bytes");

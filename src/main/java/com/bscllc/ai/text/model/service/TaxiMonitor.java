@@ -107,18 +107,21 @@ public class TaxiMonitor {
     void monitorDirectory() {
         String inputDir = System.getProperty("taxi.monitor.input.dir", "./data/input");
         String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
+        String processedDir = System.getProperty("taxi.monitor.processed.dir", "./data/processed");
 
         logger.info("Input path: {}", Path.of(inputDir).toAbsolutePath().normalize().toString());
         logger.info("Error path: {}", Path.of(errorDir).toAbsolutePath().normalize().toString());
-
+        logger.info("Processed path: {}", Path.of(processedDir).toAbsolutePath().normalize().toString());
 
         Path inputPath = Paths.get(inputDir);
         Path errorPath = Paths.get(errorDir);
+        Path processedPath = Paths.get(processedDir);
 
         try {
             // Ensure directories exist
             Files.createDirectories(inputPath);
             Files.createDirectories(errorPath);
+            Files.createDirectories(processedPath);
 
             // Process all files in the input directory
             try (Stream<Path> files = Files.list(inputPath)) {
@@ -126,7 +129,7 @@ public class TaxiMonitor {
                         .filter(file -> !processedFiles.contains(file.toString()))
                         .forEach(file -> {
                             try {
-                                processFile(file, errorPath);
+                                processFile(file, errorPath, processedPath);
                             } catch (Exception e) {
                                 logger.error("Error processing file: {}", file, e);
                             }
@@ -143,8 +146,9 @@ public class TaxiMonitor {
      *
      * @param file the file to process
      * @param errorDir the directory to move invalid files to
+     * @param processedDir the directory to move successfully processed files to
      */
-    private void processFile(Path file, Path errorDir) {
+    private void processFile(Path file, Path errorDir, Path processedDir) {
         String fileName = file.getFileName().toString();
         logger.info("Processing file: {}", fileName);
 
@@ -187,6 +191,13 @@ public class TaxiMonitor {
             filesProcessedCounter.increment();
             processedFiles.add(file.toString());
             logger.info("Successfully processed file: {}", fileName);
+            
+            // Move successfully processed file to processed directory
+            try {
+                moveToProcessedDirectory(file, processedDir);
+            } catch (IOException e) {
+                logger.error("Failed to move file to processed directory: {}", fileName, e);
+            }
 
         } catch (Exception e) {
             logger.error("Error processing file: {}", fileName, e);
@@ -392,6 +403,16 @@ public class TaxiMonitor {
         Path errorFile = errorDir.resolve(errorFileName);
         Files.move(file, errorFile, StandardCopyOption.REPLACE_EXISTING);
         logger.info("Moved file {} to error directory as {}", fileName, errorFileName);
+    }
+
+    /**
+     * Moves a successfully processed file to the processed directory.
+     */
+    private void moveToProcessedDirectory(Path file, Path processedDir) throws IOException {
+        String fileName = file.getFileName().toString();
+        Path processedFile = processedDir.resolve(fileName);
+        Files.move(file, processedFile, StandardCopyOption.REPLACE_EXISTING);
+        logger.info("Moved successfully processed file {} to processed directory", fileName);
     }
 
     /**
