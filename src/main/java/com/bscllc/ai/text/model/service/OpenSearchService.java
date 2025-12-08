@@ -4,18 +4,25 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestClientBuilder;
 
@@ -30,7 +37,6 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Service for interacting with OpenSearch.
@@ -169,12 +175,62 @@ public class OpenSearchService {
         // Create HTTP host
         this.httpHost = new HttpHost(host, port, scheme);
         
-        // Create HTTP client for direct use
-        this.httpClient = org.apache.http.impl.client.HttpClients.custom()
-            .setDefaultCredentialsProvider(credentialsProvider)
-            .build();
+        // Create HTTP client with SSL support
+        CloseableHttpClient client;
+        if ("https".equalsIgnoreCase(scheme)) {
+            // For HTTPS, configure SSL to accept self-signed certificates
+            try {
+                // Create a trust manager that accepts all certificates
+                TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        @Override
+                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                            return null;
+                        }
+                        @Override
+                        public void checkClientTrusted(
+                            java.security.cert.X509Certificate[] certs, String authType) {
+                        }
+                        @Override
+                        public void checkServerTrusted(
+                            java.security.cert.X509Certificate[] certs, String authType) {
+                        }
+                    }
+                };
+                
+                // Create SSL context with trust-all manager
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+                
+                // Create SSL socket factory that doesn't verify hostnames
+                SSLConnectionSocketFactory sslSocketFactory = new SSLConnectionSocketFactory(
+                    sslContext,
+                    NoopHostnameVerifier.INSTANCE
+                );
+                
+                client = org.apache.http.impl.client.HttpClients.custom()
+                    .setSSLSocketFactory(sslSocketFactory)
+                    .setDefaultCredentialsProvider(credentialsProvider)
+                    .build();
+                
+                logger.info("Configured HTTP client with SSL (accepting self-signed certificates)");
+            } catch (Exception e) {
+                logger.error("Failed to configure SSL context, falling back to default HTTP client", e);
+                client = org.apache.http.impl.client.HttpClients.custom()
+                    .setDefaultCredentialsProvider(credentialsProvider)
+                    .build();
+            }
+        } else {
+            // For HTTP, use standard client
+            client = org.apache.http.impl.client.HttpClients.custom()
+                .setDefaultCredentialsProvider(credentialsProvider)
+                .build();
+        }
         
-        // Create REST client
+        this.httpClient = client;
+        
+        // Create REST client (Note: RestClient is not currently used, but kept for future use)
+        // The direct HTTP client (httpClient) is used for all requests
         RestClientBuilder builder = RestClient.builder(this.httpHost);
         builder.setHttpClientConfigCallback(httpClientBuilder ->
             httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
