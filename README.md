@@ -282,6 +282,10 @@ The `TaxiMonitorTest` class provides comprehensive coverage for the file monitor
   - Handling multiple invalid schema files
   - Mixing valid and invalid schema files in the same directory
 
+- **File Movement Tests**:
+  - Successfully processed files are moved to the processed directory
+  - Files with errors are moved to the error directory with appropriate suffixes
+
 - **Metrics Verification**:
   - Files processed counter
   - Records processed counters (by taxi type)
@@ -333,10 +337,11 @@ The `TaxiMonitor` and `OpenSearchService` work together to automatically monitor
    curl http://localhost:9200/_cluster/health
    ```
 
-2. **Create input and error directories**:
+2. **Create input, error, and processed directories**:
    ```bash
    mkdir -p ./data/input
    mkdir -p ./data/error
+   mkdir -p ./data/processed
    ```
 
 ### Configuration
@@ -349,6 +354,9 @@ taxi.monitor.input.dir=./data/input
 
 # Directory for files that fail processing
 taxi.monitor.error.dir=./data/error
+
+# Directory for successfully processed files
+taxi.monitor.processed.dir=./data/processed
 
 # OpenSearch connection
 opensearch.host=localhost
@@ -366,6 +374,7 @@ opensearch.password=admin        # Change to match your OpenSearch password
    - Monitors the input directory every 30 seconds for new Parquet files
    - Automatically detects whether files match Yellow Taxi or Green Taxi schemas
    - Converts Parquet records to `YellowTaxi` or `GreenTaxi` objects
+   - Moves successfully processed files to the processed directory
    - Moves non-Parquet files or schema-mismatched files to the error directory
 
 2. **OpenSearchService**:
@@ -376,7 +385,17 @@ opensearch.password=admin        # Change to match your OpenSearch password
 3. **Processing Flow**:
    - Files are processed in batches of 1000 records
    - Records are indexed to `yellowtaxi` or `greentaxi` indices based on schema
+   - Successfully processed files are moved to the processed directory (preserving original filename)
+   - Files with errors are moved to the error directory with a reason suffix (e.g., `filename_schema_mismatch.parquet`)
    - Processed files are tracked to avoid reprocessing
+
+4. **File Lifecycle**:
+   - **Input Directory** (`taxi.monitor.input.dir`): New Parquet files are placed here for processing
+   - **Processed Directory** (`taxi.monitor.processed.dir`): Successfully processed files are moved here
+   - **Error Directory** (`taxi.monitor.error.dir`): Files that fail processing are moved here with error reason suffixes:
+     - `_not_parquet` - File is not a Parquet file
+     - `_schema_mismatch` - File doesn't match Yellow or Green taxi schema
+     - `_processing_error` - Error occurred during processing/indexing
 
 ### Running the Service
 
@@ -400,7 +419,7 @@ The service will:
 **Development Profile Features**:
 - Verbose logging (DEBUG level)
 - Localhost OpenSearch connection
-- Local file paths for input/error directories
+- Local file paths for input/error/processed directories
 
 #### Production Mode
 
@@ -419,7 +438,7 @@ java -jar target/quarkus-app/quarkus-run.jar
 **Production Profile Features**:
 - INFO level logging (less verbose)
 - Environment variable support for configuration
-- Production-optimized file paths (`/var/lib/taxi-monitor/`)
+- Production-optimized file paths (`/var/lib/taxi-monitor/input`, `/var/lib/taxi-monitor/error`, `/var/lib/taxi-monitor/processed`)
 - Configurable via environment variables:
   - `OPENSEARCH_HOST` - OpenSearch hostname
   - `OPENSEARCH_PORT` - OpenSearch port
@@ -457,9 +476,20 @@ The active profile can be set via:
    # "Processing file: yellow_tripdata_2025_01.parquet"
    # "Processing Yellow taxi file: yellow_tripdata_2025_01.parquet"
    # "Indexed X Yellow taxi records from file: yellow_tripdata_2025_01.parquet"
+   # "Successfully processed file: yellow_tripdata_2025_01.parquet"
+   # "Moved successfully processed file yellow_tripdata_2025_01.parquet to processed directory"
    ```
 
-3. **Verify data in OpenSearch**:
+3. **Verify file movement**:
+   ```bash
+   # Check that the file was moved to processed directory
+   ls -lh ./data/processed/
+   
+   # Check error directory if processing failed
+   ls -lh ./data/error/
+   ```
+
+4. **Verify data in OpenSearch**:
    ```bash
    # Check if indices were created
    curl -u admin:admin -k https://localhost:9200/_cat/indices?v
@@ -471,7 +501,7 @@ The active profile can be set via:
    curl -u admin:admin -k https://localhost:9200/greentaxi/_search?size=5
    ```
 
-4. **Check metrics**:
+5. **Check metrics**:
    ```bash
    # View Prometheus metrics
    curl http://localhost:8080/q/metrics | grep taxi_monitor
@@ -496,12 +526,13 @@ The active profile can be set via:
 **Service won't start**:
 - Verify OpenSearch is running and accessible
 - Check OpenSearch credentials in `application.properties`
-- Ensure input/error directories exist
+- Ensure input/error/processed directories exist
 
 **Files not being processed**:
 - Check that files are `.parquet` format
 - Verify files match Yellow or Green taxi schemas
-- Check error directory for moved files
+- Check processed directory for successfully processed files
+- Check error directory for files that failed processing
 - Review service logs for error messages
 
 **Connection errors to OpenSearch**:
