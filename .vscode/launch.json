@@ -1,0 +1,21 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        
+        {
+            "type": "java",
+            "name": "Green Parquet Sampler",  // Change this to the name of the class you want to run
+            "request": "launch",
+            "mainClass": "com.bscllc.ai.text.model.util.ParquetSampler", // Change this to the name of the class you want to run
+            "args": [
+                "src/main/resources/green_tripdata_2025_01.parquet",
+                "src/main/resources/sample_green_tripdata_2025_01.parquet",
+                "600000"
+            ]
+        }
+    ]
+}
