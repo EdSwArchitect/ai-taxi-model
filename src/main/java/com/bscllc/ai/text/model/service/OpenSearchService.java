@@ -52,6 +52,7 @@ public class OpenSearchService {
     /**
      * Lazily gets the MeterRegistry from CDI container if available.
      * Returns null if CDI is not available or MeterRegistry bean is not found.
+     * This method is safe to call from any thread context.
      */
     private MeterRegistry getMeterRegistry() {
         if (meterRegistry != null) {
@@ -59,13 +60,22 @@ public class OpenSearchService {
         }
         
         try {
+            // Check if Arc container is available
+            if (!Arc.container().isRunning()) {
+                return null;
+            }
+            
             ArcContainer container = Arc.container();
             if (container != null) {
-                meterRegistry = container.instance(MeterRegistry.class).get();
-                return meterRegistry;
+                var instance = container.instance(MeterRegistry.class);
+                if (instance.isAvailable()) {
+                    meterRegistry = instance.get();
+                    return meterRegistry;
+                }
             }
         } catch (Exception e) {
-            logger.debug("MeterRegistry not available from CDI container", e);
+            // Arc might not be available in this context (e.g., worker threads)
+            logger.debug("MeterRegistry not available from CDI container: {}", e.getMessage());
         }
         
         return null;
