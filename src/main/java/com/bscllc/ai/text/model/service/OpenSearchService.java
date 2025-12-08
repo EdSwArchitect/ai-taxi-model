@@ -8,7 +8,12 @@ import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.client.RestClient;
@@ -25,6 +30,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Service for interacting with OpenSearch.
@@ -36,6 +42,8 @@ public class OpenSearchService {
 
     private MeterRegistry meterRegistry;
     private RestClient restClient;
+    private CloseableHttpClient httpClient;
+    private HttpHost httpHost;
     private volatile boolean metricsInitialized = false;
     private final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule());
@@ -127,12 +135,27 @@ public class OpenSearchService {
         }
     }
 
+    @ConfigProperty(name = "opensearch.host", defaultValue = "localhost")
+    String opensearchHost;
+
+    @ConfigProperty(name = "opensearch.port", defaultValue = "9200")
+    int opensearchPort;
+
+    @ConfigProperty(name = "opensearch.scheme", defaultValue = "https")
+    String opensearchScheme;
+
+    @ConfigProperty(name = "opensearch.username", defaultValue = "admin")
+    String opensearchUsername;
+
+    @ConfigProperty(name = "opensearch.password", defaultValue = "admin")
+    String opensearchPassword;
+
     void onStart(@Observes StartupEvent ev) {
-        String host = System.getProperty("opensearch.host", "localhost");
-        int port = Integer.parseInt(System.getProperty("opensearch.port", "9200"));
-        String scheme = System.getProperty("opensearch.scheme", "http");
-        String username = System.getProperty("opensearch.username", "admin");
-        String password = System.getProperty("opensearch.password", "SuperSecret123!");
+        String host = opensearchHost;
+        int port = opensearchPort;
+        String scheme = opensearchScheme;
+        String username = opensearchUsername;
+        String password = opensearchPassword;
 
         logger.info("Initializing OpenSearch client: {}://{}:{}", scheme, host, port);
 
@@ -143,10 +166,16 @@ public class OpenSearchService {
             new UsernamePasswordCredentials(username, password)
         );
 
+        // Create HTTP host
+        this.httpHost = new HttpHost(host, port, scheme);
+        
+        // Create HTTP client for direct use
+        this.httpClient = org.apache.http.impl.client.HttpClients.custom()
+            .setDefaultCredentialsProvider(credentialsProvider)
+            .build();
+        
         // Create REST client
-        RestClientBuilder builder = RestClient.builder(
-            new HttpHost(host, port, scheme)
-        );
+        RestClientBuilder builder = RestClient.builder(this.httpHost);
         builder.setHttpClientConfigCallback(httpClientBuilder ->
             httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
         );
@@ -172,18 +201,19 @@ public class OpenSearchService {
                 bulkBody.append(objectMapper.writeValueAsString(doc)).append("\n");
             }
 
-            org.apache.http.entity.StringEntity entity = new org.apache.http.entity.StringEntity(
+            StringEntity entity = new StringEntity(
                 bulkBody.toString(),
-                org.apache.http.entity.ContentType.APPLICATION_JSON
+                ContentType.APPLICATION_JSON
             );
 
-            org.apache.http.client.methods.HttpPost request = new org.apache.http.client.methods.HttpPost(
-                "/_bulk"
-            );
+            HttpPost request = new HttpPost("/_bulk");
             request.setEntity(entity);
 
-            try (org.apache.http.client.methods.CloseableHttpResponse response = 
-                    org.apache.http.impl.client.HttpClients.createDefault().execute(request)) {
+            if (httpClient == null || httpHost == null) {
+                throw new IllegalStateException("OpenSearch client not initialized. Call onStart() first.");
+            }
+
+            try (CloseableHttpResponse response = httpClient.execute(httpHost, request)) {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
                     logger.info("Bulk index operation successful: {} items indexed", documents.size());
@@ -225,18 +255,19 @@ public class OpenSearchService {
      */
     public String indexDocument(String index, Map<String, Object> document) {
         try {
-            org.apache.http.entity.StringEntity entity = new org.apache.http.entity.StringEntity(
+            StringEntity entity = new StringEntity(
                 objectMapper.writeValueAsString(document),
-                org.apache.http.entity.ContentType.APPLICATION_JSON
+                ContentType.APPLICATION_JSON
             );
 
-            org.apache.http.client.methods.HttpPost request = new org.apache.http.client.methods.HttpPost(
-                "/" + index + "/_doc"
-            );
+            HttpPost request = new HttpPost("/" + index + "/_doc");
             request.setEntity(entity);
 
-            try (org.apache.http.client.methods.CloseableHttpResponse response = 
-                    org.apache.http.impl.client.HttpClients.createDefault().execute(request)) {
+            if (httpClient == null || httpHost == null) {
+                throw new IllegalStateException("OpenSearch client not initialized. Call onStart() first.");
+            }
+
+            try (CloseableHttpResponse response = httpClient.execute(httpHost, request)) {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
                     String responseBody = new String(response.getEntity().getContent().readAllBytes());
@@ -280,6 +311,14 @@ public class OpenSearchService {
                 restClient.close();
             } catch (IOException e) {
                 logger.error("Error closing OpenSearch client", e);
+            }
+        }
+        
+        if (httpClient != null) {
+            try {
+                httpClient.close();
+            } catch (IOException e) {
+                logger.error("Error closing HTTP client", e);
             }
         }
     }
