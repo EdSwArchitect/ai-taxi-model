@@ -23,7 +23,9 @@ import com.bscllc.ai.text.model.datamodel.GreenTaxi;
 import com.bscllc.ai.text.model.datamodel.YellowTaxi;
 import com.bscllc.ai.text.model.input.GreenReader;
 import com.bscllc.ai.text.model.input.YellowReader;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import io.micrometer.core.instrument.Counter;
@@ -53,7 +55,11 @@ public class TaxiMonitor {
     private final GreenReader greenReader = new GreenReader();
     private final YellowReader yellowReader = new YellowReader();
     private final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
+            .registerModule(new JavaTimeModule())
+            .findAndRegisterModules()
+            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
 
     // Track processed files to avoid reprocessing
     private final Set<String> processedFiles = ConcurrentHashMap.newKeySet();
@@ -306,13 +312,13 @@ public class TaxiMonitor {
                         logger.debug("Indexed batch of {} Green taxi records", BATCH_SIZE);
                     }
                 } catch (Exception e) {
-                    logger.error("Error serializing GreenTaxi to JSON", e);
-                    // String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
-
-                    // Path errorPath = Paths.get(errorDir);
-
-                    // moveToErrorDirectory(file,  errorPath, "not_parquet");
-                    // return;
+                    logger.error("Error serializing GreenTaxi to JSON (record #{}, vendorID: {}, pickup: {}, dropoff: {}): {}", 
+                        count + 1,
+                        taxi != null ? taxi.vendorID() : "null",
+                        taxi != null && taxi.lpepPickupDateTime() != null ? taxi.lpepPickupDateTime() : "null",
+                        taxi != null && taxi.lpepDropoffDateTime() != null ? taxi.lpepDropoffDateTime() : "null",
+                        e.getMessage(), e);
+                    // Continue processing other records instead of stopping
                 }
             }
 
@@ -353,13 +359,13 @@ public class TaxiMonitor {
                         logger.debug("Indexed batch of {} Yellow taxi records", BATCH_SIZE);
                     }
                 } catch (Exception e) {
-                    logger.error("Error serializing YellowTaxi to JSON", e);
-                    // String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
-
-                    // Path errorPath = Paths.get(errorDir);
-
-                    // moveToErrorDirectory(file,  errorPath, "not_parquet");
-                    // return;
+                    logger.error("Error serializing YellowTaxi to JSON (record #{}, vendorID: {}, pickup: {}, dropoff: {}): {}", 
+                        count + 1,
+                        taxi != null ? taxi.vendorID() : "null",
+                        taxi != null && taxi.tpepPickupDateTime() != null ? taxi.tpepPickupDateTime() : "null",
+                        taxi != null && taxi.tpepDropoffDateTime() != null ? taxi.tpepDropoffDateTime() : "null",
+                        e.getMessage(), e);
+                    // Continue processing other records instead of stopping
                 }
             }
 
