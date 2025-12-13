@@ -229,12 +229,17 @@ public class OpenSearchService {
         
         this.httpClient = client;
         
-        // Create REST client (Note: RestClient is not currently used, but kept for future use)
-        // The direct HTTP client (httpClient) is used for all requests
+        // Create REST client with credentials (Note: RestClient is not currently used, but kept for future use)
+        // The direct HTTP client (httpClient) is used for all requests and has SSL and authentication configured above
         RestClientBuilder builder = RestClient.builder(this.httpHost);
-        builder.setHttpClientConfigCallback(httpClientBuilder ->
-            httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider)
-        );
+        builder.setHttpClientConfigCallback(httpClientBuilder -> {
+            // Set credentials provider for authentication
+            httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider);
+            // Note: SSL configuration for RestClient would require additional async client setup,
+            // but since RestClient is not used (all requests go through httpClient above),
+            // we just ensure credentials are set. The httpClient already has SSL properly configured.
+            return httpClientBuilder;
+        });
         this.restClient = builder.build();
 
         logger.info("OpenSearch client initialized successfully");

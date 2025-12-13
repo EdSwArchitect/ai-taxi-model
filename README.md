@@ -9,8 +9,12 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **Schema Validation**: Automatic validation of Parquet file schemas
 - **JSON Support**: Full JSON serialization/deserialization support using Jackson
 - **Type-Safe Enums**: Enum classes for VendorID, RatecodeID, and TripType
-- **Quarkus Service**: Automated file monitoring and indexing to OpenSearch
+- **Quarkus Services**: 
+  - `TaxiMonitor`: Automated file monitoring and indexing to OpenSearch (polling-based)
+  - `ParquetFileDirectoryMonitor`: Real-time directory monitoring using WatchService with database storage
+  - `ParquetToDatabaseService`: Converts Parquet files to PostgreSQL tables
 - **OpenSearch Integration**: Bulk indexing of taxi trip data
+- **PostgreSQL Integration**: Automatic table creation and data insertion from Parquet files
 - **Metrics & Monitoring**: Micrometer metrics with Prometheus export and Grafana dashboards
 - **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
 - **Comprehensive Testing**: Full test coverage with JUnit 5 and Mockito
@@ -39,6 +43,8 @@ ai-taxi-model/
 │   │   │       │   └── GreenReader.java
 │   │   │       └── service/            # Quarkus services
 │   │   │           ├── TaxiMonitor.java
+│   │   │           ├── ParquetFileDirectoryMonitor.java
+│   │   │           ├── ParquetToDatabaseService.java
 │   │   │           └── OpenSearchService.java
 │   │   └── resources/
 │   │       ├── log4j2.xml              # Logging configuration
@@ -64,6 +70,7 @@ ai-taxi-model/
 - **Apache Avro** (1.11.3) - Data serialization
 - **Apache Hadoop** (3.3.6) - File system support for Parquet
 - **OpenSearch REST Client** - OpenSearch Java client for indexing data
+- **PostgreSQL JDBC Driver** - Database connectivity for ParquetToDatabaseService and testing
 - **Micrometer** (via Quarkus) - Metrics collection and Prometheus export
 
 ## Building the Project
@@ -263,12 +270,16 @@ The project includes comprehensive test coverage:
 - **Reader Tests**: File reading, schema validation, error handling
 - **Enum Tests**: Code conversion, validation, edge cases
 - **JSON Tests**: Serialization, deserialization, round-trip testing
-- **Service Tests**: TaxiMonitor and OpenSearchService integration tests
+- **Service Tests**: 
+  - TaxiMonitor integration tests
+  - ParquetFileDirectoryMonitor integration tests
+  - ParquetToDatabaseService integration tests
+  - OpenSearchService integration tests
 
 ### Test Coverage
 
 #### TaxiMonitor Tests
-The `TaxiMonitorTest` class provides comprehensive coverage for the file monitoring service:
+The `TaxiMonitorTest` class provides comprehensive coverage for the polling-based file monitoring service:
 
 - **Valid Schema Tests**:
   - Processing valid Green taxi Parquet files
@@ -292,22 +303,114 @@ The `TaxiMonitorTest` class provides comprehensive coverage for the file monitor
   - Error file counters
   - OpenSearch indexing verification
 
+#### ParquetFileDirectoryMonitor Tests
+The `ParquetFileDirectoryMonitorTest` class provides comprehensive coverage for the real-time WatchService-based file monitoring:
+
+- **File Processing Tests**:
+  - Processing Green taxi Parquet files with database storage
+  - Processing Yellow taxi Parquet files with database storage
+  - Processing multiple files (both Green and Yellow)
+  - File reprocessing prevention
+
+- **Error Handling Tests**:
+  - Handling non-Parquet files (moved to error directory)
+  - Handling SQLException during database processing
+  - Handling IOException during file processing
+  - File movement to error directory with appropriate suffixes
+
+- **File Movement Tests**:
+  - Successfully processed files moved to processed directory
+  - Error files moved to error directory with error reason suffixes
+
+- **Metrics Verification**:
+  - Files processed counter (`parquet.monitor.files.processed`)
+  - Records processed counters by taxi type (`parquet.monitor.green.records`, `parquet.monitor.yellow.records`)
+  - Error counters (`parquet.monitor.files.errored`, `parquet.monitor.processing.errors`)
+
+- **Service Lifecycle Tests**:
+  - Monitoring service start/stop functionality
+
+#### ParquetToDatabaseService Tests
+The `ParquetToDatabaseServiceTest` class provides comprehensive coverage for Parquet to database conversion:
+
+- **Table Creation**: Automatic table creation from Parquet schema in PostgreSQL
+- **Data Insertion**: Batch insertion of records into PostgreSQL tables
+- **Schema Handling**: Avro to SQL type conversion (PostgreSQL types)
+- **Error Handling**: Missing files, invalid paths, database connection errors
+- **PostgreSQL Compatibility**: Uses PostgreSQL-specific SQL queries and table management
+- **Test Database**: Requires PostgreSQL to be running (tests skip gracefully if unavailable)
+
+**Test Database Requirements**:
+- PostgreSQL 15+ (or compatible version)
+- Database `ai_taxi_model` must exist (created automatically by docker-compose)
+- User `postgres` with appropriate permissions
+
+**Test Cleanup**:
+- Tests automatically clean up created tables after each test
+- Test tables are identified by naming patterns and dropped safely
+
 #### Running Tests
 
-Run all tests:
+**Prerequisites for Database Tests**:
+The `ParquetToDatabaseServiceTest` requires a PostgreSQL database. Tests will automatically skip if PostgreSQL is not available.
+
+1. **Start PostgreSQL** (using Docker Compose):
+   ```bash
+   docker-compose up -d postgres
+   ```
+
+2. **Verify PostgreSQL is running**:
+   ```bash
+   psql -h localhost -U postgres -d ai_taxi_model -c "SELECT 1"
+   ```
+
+**Default Test Database Configuration**:
+- Host: `localhost`
+- Port: `5432`
+- Database: `ai_taxi_model`
+- Username: `postgres`
+- Password: `postgres`
+- Schema: `public`
+
+**Customize Test Database Settings**:
+You can override the default test database settings using system properties:
+```bash
+mvn test -Dtest.db.host=localhost \
+         -Dtest.db.port=5432 \
+         -Dtest.db.name=ai_taxi_model \
+         -Dtest.db.username=postgres \
+         -Dtest.db.password=postgres \
+         -Dtest.db.schema=public
+```
+
+**Run all tests**:
 ```bash
 mvn test
 ```
 
-Run specific test class:
+**Run specific test class**:
 ```bash
 mvn test -Dtest=TaxiMonitorTest
 ```
 
-Run specific test method:
+**Run specific test method**:
 ```bash
 mvn test -Dtest=TaxiMonitorTest#testProcessGoodGreenParquetFile
 ```
+
+**Run ParquetFileDirectoryMonitor tests**:
+```bash
+mvn test -Dtest=ParquetFileDirectoryMonitorTest
+```
+
+**Run ParquetToDatabaseService tests**:
+```bash
+# Ensure PostgreSQL is running first
+docker-compose up -d postgres
+mvn test -Dtest=ParquetToDatabaseServiceTest
+```
+
+**Note**: Tests that require PostgreSQL will automatically skip with a helpful message if the database is not available. This allows the test suite to run in environments without PostgreSQL, though those specific tests will be skipped.
 
 ## Data Files
 
@@ -320,9 +423,25 @@ Example file names:
 - `yellow_tripdata_2025_01.parquet`
 - `green_tripdata_2025_01.parquet`
 
-## Quarkus Service
+## Quarkus Services
 
-The `TaxiMonitor` and `OpenSearchService` work together to automatically monitor a directory for Parquet files and index them to OpenSearch.
+The project includes multiple services for processing taxi data:
+
+### TaxiMonitor Service
+`TaxiMonitor` and `OpenSearchService` work together to automatically monitor a directory for Parquet files and index them to OpenSearch using polling-based monitoring (checks every 30 seconds).
+
+### ParquetFileDirectoryMonitor Service
+`ParquetFileDirectoryMonitor` uses Java's `WatchService` API for real-time file monitoring and processes files using `ParquetToDatabaseService` to store data in PostgreSQL. This service automatically starts when the Quarkus application starts and monitors the input directory for new Parquet files.
+
+**Key Features**:
+- Real-time file detection (no polling delay)
+- Automatic schema detection (Green vs Yellow taxi)
+- Database table creation and data insertion
+- Async file processing to avoid blocking
+- Comprehensive error handling and file management
+- Metrics tracking for monitoring
+
+## TaxiMonitor Service (OpenSearch)
 
 ### Prerequisites
 
@@ -521,6 +640,184 @@ The active profile can be set via:
 - **Features**: Bulk indexing, error handling, metrics tracking
 - **Location**: `com.bscllc.ai.text.model.service.OpenSearchService`
 
+### ParquetFileDirectoryMonitor Service (PostgreSQL)
+
+#### Overview
+The `ParquetFileDirectoryMonitor` service provides real-time directory monitoring for Parquet files and automatically processes them into PostgreSQL tables using `ParquetToDatabaseService`.
+
+#### Prerequisites
+
+1. **PostgreSQL must be running**:
+   ```bash
+   # Start PostgreSQL using Docker Compose
+   docker-compose up -d postgres
+   
+   # Verify PostgreSQL is accessible
+   psql -h localhost -U postgres -d ai_taxi_model
+   ```
+
+2. **Create input, error, and processed directories**:
+   ```bash
+   mkdir -p ./data/input
+   mkdir -p ./data/error
+   mkdir -p ./data/processed
+   ```
+
+#### Configuration
+
+Edit `src/main/resources/application.properties`:
+
+```properties
+# Directory to monitor for Parquet files (used by both TaxiMonitor and ParquetFileDirectoryMonitor)
+taxi.monitor.input.dir=./data/input
+
+# Directory for files that fail processing
+taxi.monitor.error.dir=./data/error
+
+# Directory for successfully processed files
+taxi.monitor.processed.dir=./data/processed
+
+# Database configuration (for ParquetToDatabaseService)
+db.url=jdbc:postgresql://localhost:5432/ai_taxi_model
+db.username=postgres
+db.password=postgres
+db.schema=public
+```
+
+#### How It Works
+
+1. **Real-Time Monitoring**:
+   - Uses Java's `WatchService` API to detect file system events
+   - Monitors for `ENTRY_CREATE` and `ENTRY_MODIFY` events
+   - Automatically starts monitoring when the service is initialized
+
+2. **Schema Detection**:
+   - Automatically detects whether files match Green Taxi or Yellow Taxi schemas
+   - Invalid schema files are moved to the error directory with `schema_mismatch` suffix
+
+3. **Database Processing**:
+   - Creates PostgreSQL tables dynamically based on Parquet file schema
+   - Table naming: `greentaxi_{filename}` or `yellowtaxi_{filename}`
+   - Each file gets its own table to avoid conflicts
+   - Inserts records in batches of 1000
+
+4. **Async Processing**:
+   - Files are processed asynchronously to avoid blocking the monitoring loop
+   - Multiple files can be processed concurrently
+   - Prevents duplicate processing by tracking processed files
+
+5. **File Lifecycle**:
+   - **Input Directory**: New Parquet files are detected in real-time
+   - **Processed Directory**: Successfully processed files are moved here
+   - **Error Directory**: Files with errors are moved here with error reason suffixes:
+     - `_not_parquet` - File is not a Parquet file
+     - `_schema_mismatch` - File doesn't match Green or Yellow taxi schema
+     - `_processing_error` - Error occurred during database processing
+     - `_unexpected_error` - Unexpected error occurred
+
+#### Running the Service
+
+The service automatically starts when the Quarkus application starts:
+
+```bash
+mvn quarkus:dev
+```
+
+The service will:
+- Start monitoring `./data/input` directory immediately
+- Process any existing `.parquet` files in the input directory
+- Continue monitoring for new files in real-time
+
+#### Testing the Service
+
+1. **Place a Parquet file in the input directory**:
+   ```bash
+   cp src/test/resources/yellow_tripdata_2025_01.parquet ./data/input/
+   # Or
+   cp src/test/resources/green_tripdata_2025_01.parquet ./data/input/
+   ```
+
+2. **Monitor the logs**:
+   ```bash
+   # Watch for processing messages
+   # You should see logs like:
+   # "Detected new parquet file: yellow_tripdata_2025_01.parquet"
+   # "Processing file: yellow_tripdata_2025_01.parquet"
+   # "Processing Parquet file: ..."
+   # "Successfully processed X records from ... into table yellowtaxi_yellow_tripdata_2025_01"
+   # "Moved successfully processed file ... to processed directory"
+   ```
+
+3. **Verify database tables**:
+   ```bash
+   # Connect to PostgreSQL
+   psql -h localhost -U postgres -d ai_taxi_model
+   
+   # List tables
+   \dt
+   
+   # Query data from a table
+   SELECT COUNT(*) FROM "yellowtaxi_yellow_tripdata_2025_01";
+   SELECT * FROM "yellowtaxi_yellow_tripdata_2025_01" LIMIT 5;
+   ```
+
+4. **Verify file movement**:
+   ```bash
+   # Check that the file was moved to processed directory
+   ls -lh ./data/processed/
+   
+   # Check error directory if processing failed
+   ls -lh ./data/error/
+   ```
+
+5. **Check metrics**:
+   ```bash
+   # View Prometheus metrics
+   curl http://localhost:8080/q/metrics | grep parquet.monitor
+   ```
+
+#### Service Components
+
+##### ParquetFileDirectoryMonitor
+- **Purpose**: Real-time directory monitoring using WatchService
+- **Initialization**: Automatically starts when Quarkus application starts
+- **Processing**: Async file processing with duplicate prevention
+- **Metrics**: Tracks files processed, records processed, and errors
+- **Location**: `com.bscllc.ai.text.model.service.ParquetFileDirectoryMonitor`
+
+##### ParquetToDatabaseService
+- **Purpose**: Converts Parquet files to PostgreSQL tables
+- **Features**: 
+  - Automatic schema detection and table creation
+  - Avro to SQL type mapping
+  - Batch insertion for performance
+  - Table name sanitization
+- **Location**: `com.bscllc.ai.text.model.service.ParquetToDatabaseService`
+
+#### Troubleshooting
+
+**Service not detecting files**:
+- Ensure the input directory exists and is accessible
+- Verify files have `.parquet` extension
+- Check service logs for WatchService errors
+- Ensure files are not locked by other processes
+
+**Database connection errors**:
+- Verify PostgreSQL is running: `psql -h localhost -U postgres -d ai_taxi_model`
+- Check database credentials in `application.properties`
+- Ensure the database and schema exist
+
+**Table creation errors**:
+- Check PostgreSQL logs for SQL errors
+- Verify user has CREATE TABLE permissions
+- Check if table already exists (each file gets its own table)
+
+**Files not being processed**:
+- Check that files match Yellow or Green taxi schemas
+- Review error directory for files with error suffixes
+- Check service logs for processing errors
+- Verify executor service is running (check logs for thread activity)
+
 ### Troubleshooting
 
 **Service won't start**:
@@ -570,12 +867,21 @@ The Quarkus service exposes Prometheus metrics at:
 ### Available Metrics
 
 #### TaxiMonitor Metrics
-- `taxi_monitor_files_processed_total` - Total files processed
-- `taxi_monitor_yellow_files_total` - Yellow taxi files processed
-- `taxi_monitor_yellow_records_total` - Yellow taxi records processed
-- `taxi_monitor_green_files_total` - Green taxi files processed
-- `taxi_monitor_green_records_total` - Green taxi records processed
-- `taxi_monitor_files_errored_total` - Files that failed processing
+- `taxi.monitor.files.processed` - Total files processed
+- `taxi.monitor.yellow.files` - Yellow taxi files processed
+- `taxi.monitor.yellow.records` - Yellow taxi records processed
+- `taxi.monitor.green.files` - Green taxi files processed
+- `taxi.monitor.green.records` - Green taxi records processed
+- `taxi.monitor.files.errored` - Files that failed processing
+
+#### ParquetFileDirectoryMonitor Metrics
+- `parquet.monitor.files.processed` - Total parquet files processed by directory monitor
+- `parquet.monitor.yellow.files` - Yellow taxi files processed
+- `parquet.monitor.yellow.records` - Yellow taxi records processed
+- `parquet.monitor.green.files` - Green taxi files processed
+- `parquet.monitor.green.records` - Green taxi records processed
+- `parquet.monitor.files.errored` - Files that failed processing
+- `parquet.monitor.processing.errors` - Processing errors encountered
 
 #### OpenSearchService Metrics
 - `opensearch_documents_indexed_total` - Total documents indexed
@@ -585,6 +891,16 @@ The Quarkus service exposes Prometheus metrics at:
 - `opensearch_yellow_bulk_operations_total` - Yellow taxi bulk operations
 - `opensearch_green_bulk_operations_total` - Green taxi bulk operations
 - `opensearch_indexing_errors_total` - Indexing errors
+
+#### ParquetToDatabaseService Metrics
+- `parquet.database.files.processed` - Total number of Parquet files processed to database
+- `parquet.database.records.inserted` - Total number of records inserted into database
+- `parquet.database.tables.created` - Total number of database tables created
+- `parquet.database.batch.operations` - Total number of batch insert operations performed
+- `parquet.database.batch.insert.success` - Total number of successful batch inserts
+- `parquet.database.batch.insert.failure` - Total number of failed batch inserts
+- `parquet.database.errors` - Total number of database errors encountered
+- `parquet.database.processing.time` - Timer metric for time taken to process Parquet files (includes duration, count, max, etc.)
 
 ### Prometheus Integration
 
@@ -604,7 +920,7 @@ A pre-configured Grafana dashboard is available with:
 - Real-time monitoring with 10-second refresh
 
 **Access**: http://localhost:3000 (admin/admin)
-**Dashboard**: "Taxi Monitor & OpenSearch Metrics"
+**Dashboard**: "Taxi Monitor, OpenSearch & Database Metrics"
 
 See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions.
 

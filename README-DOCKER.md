@@ -153,9 +153,10 @@ When security is enabled:
 - **Default credentials**: admin/admin
 - **Prometheus datasource**: Pre-configured
 - **Dashboards**: Located in `grafana/dashboards/`
-  - **Taxi Monitor & OpenSearch Metrics Dashboard**: Automatically provisioned
+  - **Taxi Monitor, OpenSearch & Database Metrics Dashboard**: Automatically provisioned
     - File processing metrics (files processed, records processed, errors)
     - OpenSearch indexing metrics (documents indexed, bulk operations, errors)
+    - Database processing metrics (files processed, records inserted, tables created, batch operations, processing time, errors)
     - Real-time monitoring with 10-second refresh
 
 ## Environment Variables
