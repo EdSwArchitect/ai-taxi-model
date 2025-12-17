@@ -18,6 +18,7 @@ import org.apache.parquet.avro.AvroParquetReader;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.io.InputFile;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import com.bscllc.ai.text.model.datamodel.GreenTaxi;
 import com.bscllc.ai.text.model.datamodel.YellowTaxi;
@@ -52,6 +53,9 @@ public class TaxiMonitor {
     @Inject
     MeterRegistry meterRegistry;
 
+    @ConfigProperty(name = "taxi.monitor.enabled", defaultValue = "true")
+    boolean enabled;
+
     private final GreenReader greenReader = new GreenReader();
     private final YellowReader yellowReader = new YellowReader();
     private final ObjectMapper objectMapper = new ObjectMapper()
@@ -74,6 +78,13 @@ public class TaxiMonitor {
 
     @PostConstruct
     void initMetrics() {
+        if (!enabled) {
+            logger.info("TaxiMonitor is disabled. Set taxi.monitor.enabled=true to enable.");
+            return;
+        }
+        
+        logger.info("TaxiMonitor initialized and enabled. Monitoring directory for files to index to OpenSearch.");
+        
         filesProcessedCounter = Counter.builder("taxi.monitor.files.processed")
                 .description("Total number of files processed")
                 .register(meterRegistry);
@@ -105,6 +116,11 @@ public class TaxiMonitor {
      */
     @Scheduled(every = "30s")
     void monitorDirectory() {
+        // Skip if service is disabled
+        if (!enabled) {
+            return;
+        }
+        
         String inputDir = System.getProperty("taxi.monitor.input.dir", "./data/input");
         String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
         String processedDir = System.getProperty("taxi.monitor.processed.dir", "./data/processed");

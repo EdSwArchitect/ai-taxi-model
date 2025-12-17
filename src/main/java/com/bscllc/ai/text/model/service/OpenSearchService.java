@@ -1,6 +1,8 @@
 package com.bscllc.ai.text.model.service;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -14,10 +16,12 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.auth.BasicScheme;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.logging.log4j.LogManager;
@@ -50,6 +54,9 @@ public class OpenSearchService {
     private RestClient restClient;
     private CloseableHttpClient httpClient;
     private HttpHost httpHost;
+    private CredentialsProvider credentialsProvider;
+    private HttpClientContext httpContext;
+    private String authHeader; // Pre-computed Authorization header
     private volatile boolean metricsInitialized = false;
     private final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule());
@@ -165,15 +172,34 @@ public class OpenSearchService {
 
         logger.info("Initializing OpenSearch client: {}://{}:{}", scheme, host, port);
 
+        // Create HTTP host first (needed for auth cache)
+        this.httpHost = new HttpHost(host, port, scheme);
+
         // Create credentials provider
-        CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(
+        this.credentialsProvider = new BasicCredentialsProvider();
+        this.credentialsProvider.setCredentials(
             AuthScope.ANY,
             new UsernamePasswordCredentials(username, password)
         );
 
-        // Create HTTP host
-        this.httpHost = new HttpHost(host, port, scheme);
+        // Pre-compute Authorization header for Basic authentication
+        // This ensures the header is always sent with requests
+        String credentials = username + ":" + password;
+        String encodedCredentials = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+        this.authHeader = "Basic " + encodedCredentials;
+        
+        logger.debug("Configured Basic authentication for user: {}", username);
+
+        // Create HTTP context for authentication with pre-emptive Basic auth
+        this.httpContext = HttpClientContext.create();
+        this.httpContext.setCredentialsProvider(this.credentialsProvider);
+        
+        // Pre-emptively add Basic auth scheme to avoid 401 challenge-response
+        // This ensures the Authorization header is sent with every request
+        BasicScheme basicAuth = new BasicScheme();
+        org.apache.http.impl.client.BasicAuthCache authCache = new org.apache.http.impl.client.BasicAuthCache();
+        authCache.put(this.httpHost, basicAuth);
+        this.httpContext.setAuthCache(authCache);
         
         // Create HTTP client with SSL support
         CloseableHttpClient client;
@@ -210,20 +236,20 @@ public class OpenSearchService {
                 
                 client = org.apache.http.impl.client.HttpClients.custom()
                     .setSSLSocketFactory(sslSocketFactory)
-                    .setDefaultCredentialsProvider(credentialsProvider)
+                    .setDefaultCredentialsProvider(this.credentialsProvider)
                     .build();
                 
                 logger.info("Configured HTTP client with SSL (accepting self-signed certificates)");
             } catch (Exception e) {
                 logger.error("Failed to configure SSL context, falling back to default HTTP client", e);
                 client = org.apache.http.impl.client.HttpClients.custom()
-                    .setDefaultCredentialsProvider(credentialsProvider)
+                    .setDefaultCredentialsProvider(this.credentialsProvider)
                     .build();
             }
         } else {
             // For HTTP, use standard client
             client = org.apache.http.impl.client.HttpClients.custom()
-                .setDefaultCredentialsProvider(credentialsProvider)
+                .setDefaultCredentialsProvider(this.credentialsProvider)
                 .build();
         }
         
@@ -234,7 +260,7 @@ public class OpenSearchService {
         RestClientBuilder builder = RestClient.builder(this.httpHost);
         builder.setHttpClientConfigCallback(httpClientBuilder -> {
             // Set credentials provider for authentication
-            httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider);
+            httpClientBuilder.setDefaultCredentialsProvider(this.credentialsProvider);
             // Note: SSL configuration for RestClient would require additional async client setup,
             // but since RestClient is not used (all requests go through httpClient above),
             // we just ensure credentials are set. The httpClient already has SSL properly configured.
@@ -269,12 +295,18 @@ public class OpenSearchService {
 
             HttpPost request = new HttpPost("/_bulk");
             request.setEntity(entity);
+            
+            // Explicitly add Authorization header to ensure it's sent
+            if (authHeader != null) {
+                request.setHeader("Authorization", authHeader);
+            }
 
             if (httpClient == null || httpHost == null) {
                 throw new IllegalStateException("OpenSearch client not initialized. Call onStart() first.");
             }
 
-            try (CloseableHttpResponse response = httpClient.execute(httpHost, request)) {
+            // Use HttpClientContext to ensure authentication is included
+            try (CloseableHttpResponse response = httpClient.execute(httpHost, request, httpContext)) {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
                     logger.info("Bulk index operation successful: {} items indexed", documents.size());
@@ -323,12 +355,18 @@ public class OpenSearchService {
 
             HttpPost request = new HttpPost("/" + index + "/_doc");
             request.setEntity(entity);
+            
+            // Explicitly add Authorization header to ensure it's sent
+            if (authHeader != null) {
+                request.setHeader("Authorization", authHeader);
+            }
 
             if (httpClient == null || httpHost == null) {
                 throw new IllegalStateException("OpenSearch client not initialized. Call onStart() first.");
             }
 
-            try (CloseableHttpResponse response = httpClient.execute(httpHost, request)) {
+            // Use HttpClientContext to ensure authentication is included
+            try (CloseableHttpResponse response = httpClient.execute(httpHost, request, httpContext)) {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
                     String responseBody = new String(response.getEntity().getContent().readAllBytes());

@@ -11,6 +11,8 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -25,12 +27,16 @@ import org.apache.parquet.avro.AvroParquetReader;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.io.InputFile;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.quarkus.runtime.StartupEvent;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 
 /**
@@ -49,6 +55,24 @@ public class ParquetFileDirectoryMonitor {
     @Inject
     MeterRegistry meterRegistry;
     
+    @ConfigProperty(name = "parquet.monitor.enabled", defaultValue = "true")
+    boolean enabled;
+    
+    @ConfigProperty(name = "parquet.monitor.input.dir", defaultValue = "./data/parquet-input")
+    String inputDir;
+    
+    @ConfigProperty(name = "parquet.monitor.error.dir", defaultValue = "./data/parquet-error")
+    String errorDir;
+    
+    @ConfigProperty(name = "parquet.monitor.processed.dir", defaultValue = "./data/parquet-processed")
+    String processedDir;
+    
+    @ConfigProperty(name = "parquet.monitor.batch.size", defaultValue = "500")
+    int batchSize;
+    
+    @ConfigProperty(name = "parquet.monitor.batch.timer.seconds", defaultValue = "15")
+    int batchTimerSeconds;
+    
     private WatchService watchService;
     private ExecutorService executorService;
     private boolean running = false;
@@ -58,6 +82,12 @@ public class ParquetFileDirectoryMonitor {
     
     // Track files currently being processed
     private final Set<String> processingFiles = ConcurrentHashMap.newKeySet();
+    
+    // Queue for files waiting to be processed in batches
+    private final java.util.Queue<Path> fileQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    
+    // Last batch processing time
+    private volatile long lastBatchProcessTime = System.currentTimeMillis();
     
     // Micrometer metrics
     private Counter filesProcessedCounter;
@@ -78,46 +108,80 @@ public class ParquetFileDirectoryMonitor {
                 return t;
             });
             
-            initMetrics();
-            
-            // Auto-start monitoring after initialization
-            startMonitoring();
-            
-            logger.info("ParquetFileDirectoryMonitor initialized and started");
+            logger.info("ParquetFileDirectoryMonitor initialized (watchService and executorService created)");
         } catch (IOException e) {
             logger.error("Failed to initialize WatchService", e);
             throw new RuntimeException("Failed to initialize ParquetFileDirectoryMonitor", e);
         }
     }
+    
+    /**
+     * Starts monitoring when the application starts.
+     * This ensures the service starts even in dev mode.
+     */
+    void onStart(@Observes StartupEvent ev) {
+        // Initialize metrics after application startup when MeterRegistry is guaranteed to be available
+        initMetrics();
+        
+        if (!enabled) {
+            logger.info("ParquetFileDirectoryMonitor is disabled. Set parquet.monitor.enabled=true to enable.");
+            return;
+        }
+        
+        logger.info("ParquetFileDirectoryMonitor is enabled. Monitoring directory for files to process to PostgreSQL.");
+        logger.info("Input directory: {}", inputDir);
+        logger.info("Error directory: {}", errorDir);
+        logger.info("Processed directory: {}", processedDir);
+        
+        // Start monitoring after application startup
+        // This ensures the bean is fully initialized before starting
+        if (watchService != null && executorService != null) {
+            startMonitoring();
+            logger.info("ParquetFileDirectoryMonitor started and monitoring for files to process to PostgreSQL.");
+        } else {
+            logger.error("Cannot start monitoring: watchService or executorService is null");
+        }
+    }
 
     void initMetrics() {
-        filesProcessedCounter = Counter.builder("parquet.monitor.files.processed")
-                .description("Total number of parquet files processed by directory monitor")
-                .register(meterRegistry);
+        if (meterRegistry == null) {
+            logger.warn("MeterRegistry is not available. Metrics will not be collected.");
+            return;
+        }
         
-        yellowTaxiFilesCounter = Counter.builder("parquet.monitor.yellow.files")
-                .description("Number of yellow taxi files processed by directory monitor")
-                .register(meterRegistry);
-        
-        yellowTaxiRecordsCounter = Counter.builder("parquet.monitor.yellow.records")
-                .description("Number of yellow taxi records processed by directory monitor")
-                .register(meterRegistry);
-        
-        greenTaxiFilesCounter = Counter.builder("parquet.monitor.green.files")
-                .description("Number of green taxi files processed by directory monitor")
-                .register(meterRegistry);
-        
-        greenTaxiRecordsCounter = Counter.builder("parquet.monitor.green.records")
-                .description("Number of green taxi records processed by directory monitor")
-                .register(meterRegistry);
-        
-        erroredFilesCounter = Counter.builder("parquet.monitor.files.errored")
-                .description("Number of files that failed processing by directory monitor")
-                .register(meterRegistry);
-        
-        processingErrorsCounter = Counter.builder("parquet.monitor.processing.errors")
-                .description("Number of processing errors in directory monitor")
-                .register(meterRegistry);
+        try {
+            filesProcessedCounter = Counter.builder("parquet.monitor.files.processed")
+                    .description("Total number of parquet files processed by directory monitor")
+                    .register(meterRegistry);
+            
+            yellowTaxiFilesCounter = Counter.builder("parquet.monitor.yellow.files")
+                    .description("Number of yellow taxi files processed by directory monitor")
+                    .register(meterRegistry);
+            
+            yellowTaxiRecordsCounter = Counter.builder("parquet.monitor.yellow.records")
+                    .description("Number of yellow taxi records processed by directory monitor")
+                    .register(meterRegistry);
+            
+            greenTaxiFilesCounter = Counter.builder("parquet.monitor.green.files")
+                    .description("Number of green taxi files processed by directory monitor")
+                    .register(meterRegistry);
+            
+            greenTaxiRecordsCounter = Counter.builder("parquet.monitor.green.records")
+                    .description("Number of green taxi records processed by directory monitor")
+                    .register(meterRegistry);
+            
+            erroredFilesCounter = Counter.builder("parquet.monitor.files.errored")
+                    .description("Number of files that failed processing by directory monitor")
+                    .register(meterRegistry);
+            
+            processingErrorsCounter = Counter.builder("parquet.monitor.processing.errors")
+                    .description("Number of processing errors in directory monitor")
+                    .register(meterRegistry);
+            
+            logger.info("ParquetFileDirectoryMonitor metrics initialized successfully");
+        } catch (Exception e) {
+            logger.error("Failed to initialize metrics", e);
+        }
     }
 
     /**
@@ -125,14 +189,15 @@ public class ParquetFileDirectoryMonitor {
      */
     public void startMonitoring() {
         if (running) {
-            logger.warn("Directory monitoring is already running");
+            logger.warn("Directory database monitoring is already running");
             return;
         }
         
-        String inputDir = System.getProperty("taxi.monitor.input.dir", "./data/input");
         Path inputPath = Paths.get(inputDir);
         
-        logger.info("Starting directory monitoring for: {}", inputPath.toAbsolutePath().normalize());
+        logger.info("Starting directory database monitoring for: {}", inputPath.toAbsolutePath().normalize());
+        logger.info("Error databasedirectory: {}", Paths.get(errorDir).toAbsolutePath().normalize());
+        logger.info("Processed database directory: {}", Paths.get(processedDir).toAbsolutePath().normalize());
         
         try {
             // Ensure directory exists
@@ -148,8 +213,14 @@ public class ParquetFileDirectoryMonitor {
             // Start monitoring in background thread
             executorService.submit(this::monitorLoop);
             
-            // Process any existing files in the directory
+            // Process any existing files in the directory (add to queue)
             processExistingFiles(inputPath);
+            
+            // Start with initial batch processing
+            if (!fileQueue.isEmpty()) {
+                logger.info("Initial queue has {} files, processing first batch", fileQueue.size());
+                processBatch();
+            }
             
             logger.info("Directory monitoring started successfully");
         } catch (IOException e) {
@@ -161,6 +232,7 @@ public class ParquetFileDirectoryMonitor {
 
     /**
      * Processes any existing files in the input directory that haven't been processed yet.
+     * Adds them to the queue for batch processing.
      */
     private void processExistingFiles(Path inputPath) {
         try {
@@ -169,9 +241,69 @@ public class ParquetFileDirectoryMonitor {
                 .filter(file -> file.toString().toLowerCase().endsWith(PARQUET_EXTENSION))
                 .filter(file -> !processedFiles.contains(file.toString()) && 
                                 !processingFiles.contains(file.toString()))
-                .forEach(this::processFileAsync);
+                .forEach(file -> fileQueue.offer(file));
+            
+            logger.info("Added {} existing files to processing queue", fileQueue.size());
         } catch (IOException e) {
             logger.error("Error processing existing files in directory: {}", inputPath, e);
+        }
+    }
+    
+    /**
+     * Scheduled task that processes batches on a timer.
+     * This ensures data is committed periodically even if batch size isn't reached.
+     * Uses a configurable delay from parquet.monitor.batch.timer.seconds property.
+     */
+    @Scheduled(every = "10s", delay = 5)
+    void processBatchOnTimer() {
+        if (!enabled || !running) {
+            return;
+        }
+        
+        long currentTime = System.currentTimeMillis();
+        long timeSinceLastBatch = (currentTime - lastBatchProcessTime) / 1000;
+        
+        // Process batch if queue has files and timer has elapsed
+        if (!fileQueue.isEmpty() && timeSinceLastBatch >= batchTimerSeconds) {
+            logger.info("Timer triggered batch processing ({}s elapsed, {} files in queue)", 
+                timeSinceLastBatch, fileQueue.size());
+            processBatch();
+        }
+    }
+    
+    /**
+     * Processes a batch of files from the queue.
+     * Processes up to batchSize files or all files if queue is smaller than batchSize.
+     */
+    private void processBatch() {
+        if (fileQueue.isEmpty()) {
+            return;
+        }
+        
+        List<Path> batch = new ArrayList<>();
+        
+        // Collect up to batchSize files from queue
+        while (batch.size() < batchSize && !fileQueue.isEmpty()) {
+            Path file = fileQueue.poll();
+            if (file != null) {
+                String filePath = file.toString();
+                // Skip if already processed or currently being processed
+                if (!processedFiles.contains(filePath) && !processingFiles.contains(filePath)) {
+                    batch.add(file);
+                }
+            }
+        }
+        
+        if (batch.isEmpty()) {
+            return;
+        }
+        
+        logger.info("Processing batch of {} files", batch.size());
+        lastBatchProcessTime = System.currentTimeMillis();
+        
+        // Process each file in the batch
+        for (Path file : batch) {
+            processFileAsync(file);
         }
     }
 
@@ -206,7 +338,13 @@ public class ParquetFileDirectoryMonitor {
                     // Only process .parquet files
                     if (fileName.toString().toLowerCase().endsWith(PARQUET_EXTENSION)) {
                         logger.info("Detected new parquet file: {}", fileName);
-                        processFileAsync(fullPath);
+                        // Add to queue for batch processing
+                        fileQueue.offer(fullPath);
+                        // Check if we should process batch immediately (size-based)
+                        if (fileQueue.size() >= batchSize) {
+                            logger.info("Batch size reached ({}), processing batch immediately", fileQueue.size());
+                            processBatch();
+                        }
                     }
                 }
                 
@@ -221,7 +359,9 @@ public class ParquetFileDirectoryMonitor {
                 break;
             } catch (Exception e) {
                 logger.error("Error in monitoring loop", e);
-                processingErrorsCounter.increment();
+                if (processingErrorsCounter != null) {
+                    processingErrorsCounter.increment();
+                }
             }
         }
         
@@ -246,12 +386,22 @@ public class ParquetFileDirectoryMonitor {
             return;
         }
         
+        logger.info("Processing file: {} in background thread", file.getFileName());
+        
         // Process in background thread
+        // Note: Using submit() means exceptions are captured in the Future, but we handle them in processFile()
         executorService.submit(() -> {
             try {
+                logger.debug("Starting to process file: {} in thread: {}", file.getFileName(), Thread.currentThread().getName());
                 processFile(file);
+                logger.debug("Completed processing file: {}", file.getFileName());
+            } catch (Throwable e) {
+                // This catch block should not normally execute since processFile() handles its own exceptions
+                // But it's here as a safety net
+                logger.error("Unexpected Throwable in async file processing wrapper for file: {}", file.getFileName(), e);
             } finally {
                 processingFiles.remove(filePath);
+                logger.debug("Removed file {} from processing set", filePath);
             }
         });
     }
@@ -261,10 +411,10 @@ public class ParquetFileDirectoryMonitor {
      */
     private void processFile(Path file) {
         String fileName = file.getFileName().toString();
-        logger.info("Processing file: {}", fileName);
+        String filePathString = file.toString();
+        logger.info("Processing file: {} (full path: {})", fileName, filePathString);
         
-        String errorDir = System.getProperty("taxi.monitor.error.dir", "./data/error");
-        String processedDir = System.getProperty("taxi.monitor.processed.dir", "./data/processed");
+        // Use the configured directories (already set via ConfigProperty)
         
         Path errorPath = Paths.get(errorDir);
         Path processedPath = Paths.get(processedDir);
@@ -278,8 +428,8 @@ public class ParquetFileDirectoryMonitor {
             if (!fileName.toLowerCase().endsWith(PARQUET_EXTENSION)) {
                 logger.warn("File {} is not a Parquet file, moving to error directory", fileName);
                 moveToErrorDirectory(file, errorPath, "not_parquet");
-                filesProcessedCounter.increment();
-                erroredFilesCounter.increment();
+                if (filesProcessedCounter != null) filesProcessedCounter.increment();
+                if (erroredFilesCounter != null) erroredFilesCounter.increment();
                 processedFiles.add(file.toString());
                 return;
             }
@@ -290,8 +440,8 @@ public class ParquetFileDirectoryMonitor {
             if (schemaType == SchemaType.UNKNOWN) {
                 logger.warn("File {} does not match Green or Yellow taxi schema, moving to error directory", fileName);
                 moveToErrorDirectory(file, errorPath, "schema_mismatch");
-                filesProcessedCounter.increment();
-                erroredFilesCounter.increment();
+                if (filesProcessedCounter != null) filesProcessedCounter.increment();
+                if (erroredFilesCounter != null) erroredFilesCounter.increment();
                 processedFiles.add(file.toString());
                 return;
             }
@@ -306,16 +456,26 @@ public class ParquetFileDirectoryMonitor {
             // Process file using ParquetToDatabaseService
             // Use dropIfExists=false to preserve existing data
             // Each file gets its own table to avoid table creation conflicts
-            long recordCount = parquetToDatabaseService.processParquetFile(file, tableName, false);
+            logger.info("Calling ParquetToDatabaseService.processParquetFile for file: {} with table: {}", fileName, tableName);
+            long recordCount;
+            try {
+                recordCount = parquetToDatabaseService.processParquetFile(file, tableName, false);
+                logger.info("ParquetToDatabaseService.processParquetFile returned recordCount: {} for file: {}", recordCount, fileName);
+            } catch (Exception e) {
+                logger.error("Exception thrown by ParquetToDatabaseService.processParquetFile for file: {} table: {}", fileName, tableName, e);
+                throw e; // Re-throw to be caught by outer catch blocks
+            }
             
-            // Update metrics
-            filesProcessedCounter.increment();
-            if (schemaType == SchemaType.GREEN) {
-                greenTaxiFilesCounter.increment();
-                greenTaxiRecordsCounter.increment(recordCount);
-            } else {
-                yellowTaxiFilesCounter.increment();
-                yellowTaxiRecordsCounter.increment(recordCount);
+            // Update metrics (check for null to avoid NPE if metrics weren't initialized)
+            if (filesProcessedCounter != null) {
+                filesProcessedCounter.increment();
+                if (schemaType == SchemaType.GREEN) {
+                    if (greenTaxiFilesCounter != null) greenTaxiFilesCounter.increment();
+                    if (greenTaxiRecordsCounter != null) greenTaxiRecordsCounter.increment(recordCount);
+                } else {
+                    if (yellowTaxiFilesCounter != null) yellowTaxiFilesCounter.increment();
+                    if (yellowTaxiRecordsCounter != null) yellowTaxiRecordsCounter.increment(recordCount);
+                }
             }
             
             logger.info("Successfully processed {} records from file: {} into table {}", 
@@ -327,25 +487,25 @@ public class ParquetFileDirectoryMonitor {
             
         } catch (IOException | SQLException e) {
             logger.error("Error processing file: {}", fileName, e);
-            processingErrorsCounter.increment();
+            if (processingErrorsCounter != null) processingErrorsCounter.increment();
             try {
                 moveToErrorDirectory(file, errorPath, "processing_error");
             } catch (IOException ioException) {
                 logger.error("Failed to move file to error directory: {}", fileName, ioException);
             }
-            filesProcessedCounter.increment();
-            erroredFilesCounter.increment();
+            if (filesProcessedCounter != null) filesProcessedCounter.increment();
+            if (erroredFilesCounter != null) erroredFilesCounter.increment();
             processedFiles.add(file.toString());
         } catch (Exception e) {
             logger.error("Unexpected error processing file: {}", fileName, e);
-            processingErrorsCounter.increment();
+            if (processingErrorsCounter != null) processingErrorsCounter.increment();
             try {
                 moveToErrorDirectory(file, errorPath, "unexpected_error");
             } catch (IOException ioException) {
                 logger.error("Failed to move file to error directory: {}", fileName, ioException);
             }
-            filesProcessedCounter.increment();
-            erroredFilesCounter.increment();
+            if (filesProcessedCounter != null) filesProcessedCounter.increment();
+            if (erroredFilesCounter != null) erroredFilesCounter.increment();
             processedFiles.add(file.toString());
         }
     }

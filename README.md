@@ -435,8 +435,9 @@ The project includes multiple services for processing taxi data:
 
 **Key Features**:
 - Real-time file detection (no polling delay)
+- Configurable batch processing with timer-based flushing
 - Automatic schema detection (Green vs Yellow taxi)
-- Database table creation and data insertion
+- Database table creation and data insertion with explicit commits
 - Async file processing to avoid blocking
 - Comprehensive error handling and file management
 - Metrics tracking for monitoring
@@ -677,11 +678,18 @@ taxi.monitor.error.dir=./data/error
 # Directory for successfully processed files
 taxi.monitor.processed.dir=./data/processed
 
+# ParquetFileDirectoryMonitor batch processing configuration
+parquet.monitor.batch.size=10                    # Number of files to process in a batch
+parquet.monitor.batch.timer.seconds=30           # Timer interval (seconds) to process batches if size isn't reached
+
 # Database configuration (for ParquetToDatabaseService)
 db.url=jdbc:postgresql://localhost:5432/ai_taxi_model
 db.username=postgres
 db.password=postgres
 db.schema=public
+
+# Database batch processing configuration
+parquet.database.batch.size=1000                 # Number of records per database batch insert
 ```
 
 #### How It Works
@@ -690,25 +698,35 @@ db.schema=public
    - Uses Java's `WatchService` API to detect file system events
    - Monitors for `ENTRY_CREATE` and `ENTRY_MODIFY` events
    - Automatically starts monitoring when the service is initialized
+   - Detected files are queued for batch processing
 
-2. **Schema Detection**:
+2. **Batch Processing**:
+   - Files are collected in a queue and processed in batches
+   - Batch processing is triggered by two conditions:
+     - **Batch Size**: When the queue reaches `parquet.monitor.batch.size` files, batch processing starts immediately
+     - **Timer**: A scheduled task runs every 10 seconds and checks if `parquet.monitor.batch.timer.seconds` has elapsed since the last batch. If so, any queued files are processed
+   - This ensures data appears in the database periodically, not just when the application exits
+
+3. **Schema Detection**:
    - Automatically detects whether files match Green Taxi or Yellow Taxi schemas
    - Invalid schema files are moved to the error directory with `schema_mismatch` suffix
 
-3. **Database Processing**:
+4. **Database Processing**:
    - Creates PostgreSQL tables dynamically based on Parquet file schema
    - Table naming: `greentaxi_{filename}` or `yellowtaxi_{filename}`
    - Each file gets its own table to avoid conflicts
-   - Inserts records in batches of 1000
+   - Inserts records in batches (configurable via `parquet.database.batch.size`, default: 1000)
+   - **Explicit Commits**: Each database batch is explicitly committed, ensuring data is immediately visible in the database
+   - Final commit ensures all data is persisted before marking the file as processed
 
-4. **Async Processing**:
+5. **Async Processing**:
    - Files are processed asynchronously to avoid blocking the monitoring loop
    - Multiple files can be processed concurrently
    - Prevents duplicate processing by tracking processed files
 
-5. **File Lifecycle**:
-   - **Input Directory**: New Parquet files are detected in real-time
-   - **Processed Directory**: Successfully processed files are moved here
+6. **File Lifecycle**:
+   - **Input Directory**: New Parquet files are detected in real-time and queued
+   - **Processed Directory**: Successfully processed files are moved here after database commit
    - **Error Directory**: Files with errors are moved here with error reason suffixes:
      - `_not_parquet` - File is not a Parquet file
      - `_schema_mismatch` - File doesn't match Green or Yellow taxi schema
@@ -725,7 +743,8 @@ mvn quarkus:dev
 
 The service will:
 - Start monitoring `./data/input` directory immediately
-- Process any existing `.parquet` files in the input directory
+- Queue any existing `.parquet` files in the input directory for batch processing
+- Process batches when batch size is reached or timer elapses
 - Continue monitoring for new files in real-time
 
 #### Testing the Service
@@ -781,7 +800,10 @@ The service will:
 ##### ParquetFileDirectoryMonitor
 - **Purpose**: Real-time directory monitoring using WatchService
 - **Initialization**: Automatically starts when Quarkus application starts
-- **Processing**: Async file processing with duplicate prevention
+- **Processing**: Async file processing with batch queuing and duplicate prevention
+- **Batch Processing**: 
+  - Files are queued and processed when batch size is reached or timer elapses
+  - Configurable batch size (`parquet.monitor.batch.size`) and timer interval (`parquet.monitor.batch.timer.seconds`)
 - **Metrics**: Tracks files processed, records processed, and errors
 - **Location**: `com.bscllc.ai.text.model.service.ParquetFileDirectoryMonitor`
 
@@ -790,7 +812,8 @@ The service will:
 - **Features**: 
   - Automatic schema detection and table creation
   - Avro to SQL type mapping
-  - Batch insertion for performance
+  - Batch insertion for performance (configurable batch size via `parquet.database.batch.size`)
+  - Explicit transaction commits after each batch for immediate data visibility
   - Table name sanitization
 - **Location**: `com.bscllc.ai.text.model.service.ParquetToDatabaseService`
 
@@ -817,6 +840,11 @@ The service will:
 - Review error directory for files with error suffixes
 - Check service logs for processing errors
 - Verify executor service is running (check logs for thread activity)
+- **Data not appearing in database**: 
+  - Ensure batch timer has elapsed (default: 30 seconds) or batch size is reached (default: 10 files)
+  - Check that database batches are being committed (look for commit logs)
+  - Verify `parquet.database.batch.size` is not too large if you need more frequent commits
+  - Check database transaction logs for any rollbacks
 
 ### Troubleshooting
 

@@ -12,6 +12,7 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -22,6 +23,7 @@ import org.apache.parquet.avro.AvroParquetReader;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.io.InputFile;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -39,15 +41,22 @@ import jakarta.inject.Inject;
 public class ParquetToDatabaseService {
 
     private static final Logger logger = LogManager.getLogger(ParquetToDatabaseService.class);
-    private static final int BATCH_SIZE = 1000;
 
     @Inject
     MeterRegistry meterRegistry;
+    
+    @ConfigProperty(name = "parquet.database.batch.size", defaultValue = "1000")
+    int batchSize;
 
     private String dbUrl;
     private String dbUsername;
     private String dbPassword;
     private String dbSchema;
+    private boolean dbSslEnabled;
+    private String dbSslMode;
+    private String dbSslRootCert;
+    private String dbSslCert;
+    private String dbSslKey;
 
     // Micrometer metrics
     private Counter filesProcessedCounter;
@@ -66,9 +75,19 @@ public class ParquetToDatabaseService {
         dbPassword = System.getProperty("db.password", "postgres");
         dbSchema = System.getProperty("db.schema", "public");
         
+        // SSL/TLS configuration for PostgreSQL connection
+        dbSslEnabled = Boolean.parseBoolean(System.getProperty("db.ssl.enabled", "false"));
+        dbSslMode = System.getProperty("db.ssl.mode", "require"); // require, verify-ca, verify-full, prefer, allow, disable
+        dbSslRootCert = System.getProperty("db.ssl.rootcert", ""); // Path to root CA certificate
+        dbSslCert = System.getProperty("db.ssl.cert", ""); // Path to client certificate
+        dbSslKey = System.getProperty("db.ssl.key", ""); // Path to client key
+        
         initMetrics();
         
         logger.info("ParquetToDatabaseService initialized with database URL: {}", dbUrl);
+        if (dbSslEnabled) {
+            logger.info("Database SSL/TLS enabled with mode: {}", dbSslMode);
+        }
     }
 
     /**
@@ -147,24 +166,36 @@ public class ParquetToDatabaseService {
 
             // Create database connection
             try (Connection connection = getConnection()) {
-                // Create table based on schema
-                createTable(connection, tableName, avroSchema, dropIfExists);
-                
-                // Insert records
-                long recordCount = insertRecords(connection, filePath, tableName, avroSchema);
-                
-                // Update metrics
-                filesProcessedCounter.increment();
-                recordsInsertedCounter.increment(recordCount);
-                tablesCreatedCounter.increment();
-                
-                logger.info("Successfully processed {} records from {} into table {}", 
-                    recordCount, filePath.getFileName(), tableName);
-                
-                // Record successful processing time
-                sample.stop(processingTimeTimer);
-                
-                return recordCount;
+                // Ensure auto-commit is off for batch operations, but commit explicitly
+                boolean originalAutoCommit = connection.getAutoCommit();
+                try {
+                    connection.setAutoCommit(false);
+                    
+                    // Create table based on schema
+                    createTable(connection, tableName, avroSchema, dropIfExists);
+                    
+                    // Insert records (which will commit each batch)
+                    long recordCount = insertRecords(connection, filePath, tableName, avroSchema);
+                    
+                    // Final commit to ensure all data is persisted
+                    connection.commit();
+                    
+                    // Update metrics
+                    filesProcessedCounter.increment();
+                    recordsInsertedCounter.increment(recordCount);
+                    tablesCreatedCounter.increment();
+                    
+                    logger.info("Successfully processed {} records from {} into table {}", 
+                        recordCount, filePath.getFileName(), tableName);
+                    
+                    // Record successful processing time
+                    sample.stop(processingTimeTimer);
+                    
+                    return recordCount;
+                } finally {
+                    // Restore original auto-commit setting
+                    connection.setAutoCommit(originalAutoCommit);
+                }
             }
         } catch (SQLException e) {
             // Increment error counter
@@ -271,7 +302,7 @@ public class ParquetToDatabaseService {
             while ((record = reader.read()) != null) {
                 batch.add(record);
                 
-                if (batch.size() >= BATCH_SIZE) {
+                if (batch.size() >= batchSize) {
                     insertBatch(connection, insertSql, batch, fields);
                     recordCount += batch.size();
                     batch.clear();
@@ -314,6 +345,9 @@ public class ParquetToDatabaseService {
                 }
             }
             
+            // Explicitly commit the batch to ensure data is visible immediately
+            connection.commit();
+            
             // Update batch metrics
             if (failureCount == 0) {
                 batchInsertSuccessCounter.increment();
@@ -322,11 +356,17 @@ public class ParquetToDatabaseService {
                 logger.warn("Batch insert had {} failures out of {} records", failureCount, batch.size());
             }
             
-            logger.debug("Inserted batch of {} records ({} successful, {} failed)", 
+            logger.debug("Inserted and committed batch of {} records ({} successful, {} failed)", 
                 batch.size(), successCount, failureCount);
         } catch (SQLException e) {
             batchInsertFailureCounter.increment();
             databaseErrorsCounter.increment();
+            // Rollback on error
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackEx) {
+                logger.error("Failed to rollback transaction", rollbackEx);
+            }
             throw e;
         }
     }
@@ -539,10 +579,79 @@ public class ParquetToDatabaseService {
     }
 
     /**
-     * Gets a database connection.
+     * Gets a database connection with SSL/TLS support if enabled.
      */
     private Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
+        if (dbSslEnabled) {
+            // Build connection URL with SSL parameters
+            String urlWithSsl = buildConnectionUrlWithSsl();
+            Properties props = new Properties();
+            props.setProperty("user", dbUsername);
+            props.setProperty("password", dbPassword);
+            
+            // Add SSL connection properties
+            props.setProperty("ssl", "true");
+            props.setProperty("sslmode", dbSslMode);
+            
+            // Add certificate paths if provided
+            if (dbSslRootCert != null && !dbSslRootCert.trim().isEmpty()) {
+                props.setProperty("sslrootcert", dbSslRootCert);
+            }
+            if (dbSslCert != null && !dbSslCert.trim().isEmpty()) {
+                props.setProperty("sslcert", dbSslCert);
+            }
+            if (dbSslKey != null && !dbSslKey.trim().isEmpty()) {
+                props.setProperty("sslkey", dbSslKey);
+            }
+            
+            // For self-signed certificates in development, we might need to disable hostname verification
+            // This is similar to OpenSearchService's approach with NoopHostnameVerifier
+            if ("require".equalsIgnoreCase(dbSslMode) || "prefer".equalsIgnoreCase(dbSslMode)) {
+                // sslmode=require doesn't verify certificates, similar to trust-all in OpenSearchService
+                logger.debug("Using SSL mode '{}' which accepts self-signed certificates", dbSslMode);
+            }
+            
+            logger.debug("Connecting to database with SSL enabled (mode: {})", dbSslMode);
+            return DriverManager.getConnection(urlWithSsl, props);
+        } else {
+            // Standard connection without SSL
+            return DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
+        }
+    }
+    
+    /**
+     * Builds the JDBC connection URL with SSL parameters.
+     * If the URL already contains parameters, appends SSL parameters.
+     */
+    private String buildConnectionUrlWithSsl() {
+        String baseUrl = dbUrl;
+        
+        // Check if URL already has parameters
+        if (baseUrl.contains("?")) {
+            // URL already has parameters, append SSL parameters
+            if (!baseUrl.contains("ssl=")) {
+                baseUrl += "&ssl=true";
+            }
+            if (!baseUrl.contains("sslmode=")) {
+                baseUrl += "&sslmode=" + dbSslMode;
+            }
+        } else {
+            // No existing parameters, add SSL parameters
+            baseUrl += "?ssl=true&sslmode=" + dbSslMode;
+        }
+        
+        // Add certificate paths if provided
+        if (dbSslRootCert != null && !dbSslRootCert.trim().isEmpty()) {
+            baseUrl += "&sslrootcert=" + dbSslRootCert;
+        }
+        if (dbSslCert != null && !dbSslCert.trim().isEmpty()) {
+            baseUrl += "&sslcert=" + dbSslCert;
+        }
+        if (dbSslKey != null && !dbSslKey.trim().isEmpty()) {
+            baseUrl += "&sslkey=" + dbSslKey;
+        }
+        
+        return baseUrl;
     }
 
     @PreDestroy
