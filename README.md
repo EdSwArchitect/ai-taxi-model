@@ -720,8 +720,9 @@ parquet.database.batch.size=1000                 # Number of records per databas
    - Final commit ensures all data is persisted before marking the file as processed
 
 5. **Async Processing**:
-   - Files are processed asynchronously to avoid blocking the monitoring loop
-   - Multiple files can be processed concurrently
+   - Files are processed asynchronously using a dedicated thread pool executor to avoid blocking the monitoring loop
+   - The monitoring loop runs in a separate single-threaded executor, ensuring file detection is never blocked
+   - File processing uses a thread pool executor (5 threads by default), allowing multiple files to be processed concurrently
    - Prevents duplicate processing by tracking processed files
 
 6. **File Lifecycle**:
@@ -800,10 +801,12 @@ The service will:
 ##### ParquetFileDirectoryMonitor
 - **Purpose**: Real-time directory monitoring using WatchService
 - **Initialization**: Automatically starts when Quarkus application starts
+- **Architecture**: Uses separate executor services for monitoring (single-threaded) and file processing (thread pool with 5 threads) to ensure monitoring is never blocked
 - **Processing**: Async file processing with batch queuing and duplicate prevention
 - **Batch Processing**: 
   - Files are queued and processed when batch size is reached or timer elapses
   - Configurable batch size (`parquet.monitor.batch.size`) and timer interval (`parquet.monitor.batch.timer.seconds`)
+  - Files are processed concurrently in separate threads, allowing multiple files to be processed simultaneously
 - **Metrics**: Tracks files processed, records processed, and errors
 - **Location**: `com.bscllc.ai.text.model.service.ParquetFileDirectoryMonitor`
 
@@ -839,12 +842,13 @@ The service will:
 - Check that files match Yellow or Green taxi schemas
 - Review error directory for files with error suffixes
 - Check service logs for processing errors
-- Verify executor service is running (check logs for thread activity)
+- Verify file processing executor service is running (check logs for "ParquetFileDirectoryMonitor-FileProcessor" thread activity)
 - **Data not appearing in database**: 
   - Ensure batch timer has elapsed (default: 30 seconds) or batch size is reached (default: 10 files)
   - Check that database batches are being committed (look for commit logs)
   - Verify `parquet.database.batch.size` is not too large if you need more frequent commits
   - Check database transaction logs for any rollbacks
+  - Ensure file processing threads are not blocked (monitoring loop uses a separate executor to prevent blocking)
 
 ### Troubleshooting
 

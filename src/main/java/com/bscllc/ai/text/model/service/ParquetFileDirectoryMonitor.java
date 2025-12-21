@@ -67,14 +67,15 @@ public class ParquetFileDirectoryMonitor {
     @ConfigProperty(name = "parquet.monitor.processed.dir", defaultValue = "./data/parquet-processed")
     String processedDir;
     
-    @ConfigProperty(name = "parquet.monitor.batch.size", defaultValue = "500")
+    @ConfigProperty(name = "parquet.monitor.batch.size", defaultValue = "10")
     int batchSize;
     
     @ConfigProperty(name = "parquet.monitor.batch.timer.seconds", defaultValue = "15")
     int batchTimerSeconds;
     
     private WatchService watchService;
-    private ExecutorService executorService;
+    private ExecutorService executorService;  // For monitoring loop
+    private ExecutorService fileProcessingExecutorService;  // For file processing tasks
     private boolean running = false;
     
     // Track processed files to avoid reprocessing
@@ -89,6 +90,9 @@ public class ParquetFileDirectoryMonitor {
     // Last batch processing time
     private volatile long lastBatchProcessTime = System.currentTimeMillis();
     
+    // Flag to prevent concurrent batch processing
+    private volatile boolean batchProcessingInProgress = false;
+    
     // Micrometer metrics
     private Counter filesProcessedCounter;
     private Counter yellowTaxiFilesCounter;
@@ -102,8 +106,15 @@ public class ParquetFileDirectoryMonitor {
     void init() {
         try {
             watchService = FileSystems.getDefault().newWatchService();
+            // Single-threaded executor for monitoring loop
             executorService = Executors.newSingleThreadExecutor(r -> {
-                Thread t = new Thread(r, "ParquetFileDirectoryMonitor");
+                Thread t = new Thread(r, "ParquetFileDirectoryMonitor-WatchService");
+                t.setDaemon(true);
+                return t;
+            });
+            // Thread pool executor for file processing (allows concurrent file processing)
+            fileProcessingExecutorService = Executors.newFixedThreadPool(5, r -> {
+                Thread t = new Thread(r, "ParquetFileDirectoryMonitor-FileProcessor");
                 t.setDaemon(true);
                 return t;
             });
@@ -253,57 +264,114 @@ public class ParquetFileDirectoryMonitor {
      * Scheduled task that processes batches on a timer.
      * This ensures data is committed periodically even if batch size isn't reached.
      * Uses a configurable delay from parquet.monitor.batch.timer.seconds property.
+     * 
+     * This method runs every 10 seconds and checks if the timer has elapsed.
+     * When the timer expires, it calls processBatch() to process all queued files.
      */
     @Scheduled(every = "10s", delay = 5)
     void processBatchOnTimer() {
         if (!enabled || !running) {
+            logger.debug("Timer check skipped: enabled={}, running={}", enabled, running);
+            return;
+        }
+        
+        if (batchProcessingInProgress) {
+            logger.debug("Timer check skipped: batch processing already in progress");
+            return;
+        }
+        
+        if (fileQueue.isEmpty()) {
+            logger.debug("Timer check: queue is empty, nothing to process");
             return;
         }
         
         long currentTime = System.currentTimeMillis();
         long timeSinceLastBatch = (currentTime - lastBatchProcessTime) / 1000;
         
+        logger.debug("Timer check: {}s since last batch, {} files in queue, batch timer: {}s", 
+            timeSinceLastBatch, fileQueue.size(), batchTimerSeconds);
+        
         // Process batch if queue has files and timer has elapsed
-        if (!fileQueue.isEmpty() && timeSinceLastBatch >= batchTimerSeconds) {
-            logger.info("Timer triggered batch processing ({}s elapsed, {} files in queue)", 
-                timeSinceLastBatch, fileQueue.size());
-            processBatch();
+        // This is where queued files (from lines 410-424) get processed when the timer expires
+        if (timeSinceLastBatch >= batchTimerSeconds) {
+            logger.info("Timer triggered batch processing ({}s >= {}s elapsed, {} files in queue). Calling processBatch()...", 
+                timeSinceLastBatch, batchTimerSeconds, fileQueue.size());
+            processBatch();  // This processes the files that were queued in monitorLoop()
+        } else {
+            logger.debug("Timer not yet elapsed: {}s < {}s", timeSinceLastBatch, batchTimerSeconds);
         }
     }
     
     /**
      * Processes a batch of files from the queue.
      * Processes up to batchSize files or all files if queue is smaller than batchSize.
+     * Synchronized to prevent concurrent batch processing.
      */
-    private void processBatch() {
+    private synchronized void processBatch() {
+        // Prevent concurrent batch processing
+        if (batchProcessingInProgress) {
+            logger.debug("Batch processing already in progress, skipping");
+            return;
+        }
+        
         if (fileQueue.isEmpty()) {
+            logger.debug("processBatch called but queue is empty");
             return;
         }
         
-        List<Path> batch = new ArrayList<>();
-        
-        // Collect up to batchSize files from queue
-        while (batch.size() < batchSize && !fileQueue.isEmpty()) {
-            Path file = fileQueue.poll();
-            if (file != null) {
-                String filePath = file.toString();
-                // Skip if already processed or currently being processed
-                if (!processedFiles.contains(filePath) && !processingFiles.contains(filePath)) {
-                    batch.add(file);
-                }
-            }
-        }
-        
-        if (batch.isEmpty()) {
-            return;
-        }
-        
-        logger.info("Processing batch of {} files", batch.size());
+        batchProcessingInProgress = true;
         lastBatchProcessTime = System.currentTimeMillis();
         
-        // Process each file in the batch
-        for (Path file : batch) {
-            processFileAsync(file);
+        try {
+            List<Path> batch = new ArrayList<>();
+            int skippedCount = 0;
+            
+            // Collect up to batchSize files from queue
+            while (batch.size() < batchSize && !fileQueue.isEmpty()) {
+                Path file = fileQueue.poll();
+                if (file != null) {
+                    String filePath = file.toString();
+                    // Skip if already processed or currently being processed
+                    if (processedFiles.contains(filePath)) {
+                        logger.debug("Skipping file {} - already processed", file.getFileName());
+                        skippedCount++;
+                        continue;
+                    }
+                    if (processingFiles.contains(filePath)) {
+                        logger.debug("Skipping file {} - currently being processed", file.getFileName());
+                        skippedCount++;
+                        continue;
+                    }
+                    batch.add(file);
+                    logger.debug("Added file {} to batch (batch size: {}/{})", file.getFileName(), batch.size(), batchSize);
+                }
+            }
+            
+            if (batch.isEmpty()) {
+                logger.info("No files to process in batch (skipped: {} files already processed/processing)", skippedCount);
+                batchProcessingInProgress = false;
+                return;
+            }
+            
+            logger.info("Processing batch of {} files (batch size: {}, timer: {}s, skipped: {})", 
+                batch.size(), batchSize, batchTimerSeconds, skippedCount);
+            
+            // Process each file in the batch asynchronously
+            // Note: Files are processed concurrently, each with its own database connection
+            // Each file commits independently, which is fine for this use case
+            for (Path file : batch) {
+                logger.info("Submitting file {} for async processing", file.getFileName());
+                processFileAsync(file);
+            }
+            
+            logger.info("Batch processing started for {} files", batch.size());
+        } catch (Exception e) {
+            logger.error("Error during batch processing", e);
+        } finally {
+            // Reset flag immediately - files are processed asynchronously so this is safe
+            // The flag just prevents multiple batches from being extracted from the queue simultaneously
+            batchProcessingInProgress = false;
+            logger.debug("Batch processing flag reset");
         }
     }
 
@@ -338,12 +406,35 @@ public class ParquetFileDirectoryMonitor {
                     // Only process .parquet files
                     if (fileName.toString().toLowerCase().endsWith(PARQUET_EXTENSION)) {
                         logger.info("Detected new parquet file: {}", fileName);
+                        
+                        // Check if file is already processed or being processed
+                        String filePathString = fullPath.toString();
+                        if (processedFiles.contains(filePathString)) {
+                            logger.debug("File {} already processed, skipping", fileName);
+                            continue;
+                        }
+                        if (processingFiles.contains(filePathString)) {
+                            logger.debug("File {} currently being processed, skipping", fileName);
+                            continue;
+                        }
+                        
                         // Add to queue for batch processing
-                        fileQueue.offer(fullPath);
-                        // Check if we should process batch immediately (size-based)
-                        if (fileQueue.size() >= batchSize) {
-                            logger.info("Batch size reached ({}), processing batch immediately", fileQueue.size());
-                            processBatch();
+                        boolean added = fileQueue.offer(fullPath);
+                        if (added) {
+                            logger.info("Added file to queue: {} (queue size: {}, batch size: {}, timer: {}s)", 
+                                fileName, fileQueue.size(), batchSize, batchTimerSeconds);
+                            
+                            // Check if we should process batch immediately (size-based)
+                            if (fileQueue.size() >= batchSize && !batchProcessingInProgress) {
+                                logger.info("Batch size reached ({} >= {}), processing batch immediately", 
+                                    fileQueue.size(), batchSize);
+                                processBatch();
+                            } else {
+                                logger.info("File queued. Will be processed when batch size ({}) is reached or timer ({}s) elapses", 
+                                    batchSize, batchTimerSeconds);
+                            }
+                        } else {
+                            logger.warn("Failed to add file {} to queue (queue may be full)", fileName);
                         }
                     }
                 }
@@ -388,9 +479,10 @@ public class ParquetFileDirectoryMonitor {
         
         logger.info("Processing file: {} in background thread", file.getFileName());
         
-        // Process in background thread
+        // Process in background thread using the dedicated file processing executor
+        // This ensures file processing doesn't block the monitoring loop
         // Note: Using submit() means exceptions are captured in the Future, but we handle them in processFile()
-        executorService.submit(() -> {
+        fileProcessingExecutorService.submit(() -> {
             try {
                 logger.debug("Starting to process file: {} in thread: {}", file.getFileName(), Thread.currentThread().getName());
                 processFile(file);
@@ -457,7 +549,7 @@ public class ParquetFileDirectoryMonitor {
             // Use dropIfExists=false to preserve existing data
             // Each file gets its own table to avoid table creation conflicts
             logger.info("Calling ParquetToDatabaseService.processParquetFile for file: {} with table: {}", fileName, tableName);
-            long recordCount;
+            long recordCount = 0;
             try {
                 recordCount = parquetToDatabaseService.processParquetFile(file, tableName, false);
                 logger.info("ParquetToDatabaseService.processParquetFile returned recordCount: {} for file: {}", recordCount, fileName);
@@ -465,6 +557,8 @@ public class ParquetFileDirectoryMonitor {
                 logger.error("Exception thrown by ParquetToDatabaseService.processParquetFile for file: {} table: {}", fileName, tableName, e);
                 throw e; // Re-throw to be caught by outer catch blocks
             }
+            
+            logger.info("After processParquetFile call, recordCount: {} for file: {}", recordCount, fileName);
             
             // Update metrics (check for null to avoid NPE if metrics weren't initialized)
             if (filesProcessedCounter != null) {
@@ -476,14 +570,19 @@ public class ParquetFileDirectoryMonitor {
                     if (yellowTaxiFilesCounter != null) yellowTaxiFilesCounter.increment();
                     if (yellowTaxiRecordsCounter != null) yellowTaxiRecordsCounter.increment(recordCount);
                 }
+                logger.info("Metrics updated for file: {}", fileName);
             }
             
             logger.info("Successfully processed {} records from file: {} into table {}", 
                 recordCount, fileName, tableName);
             
+            logger.info("About to move file {} to processed directory", fileName);
             // Move successfully processed file to processed directory
             moveToProcessedDirectory(file, processedPath);
+            logger.info("File {} moved to processed directory successfully", fileName);
+            
             processedFiles.add(file.toString());
+            logger.info("File {} added to processedFiles set", fileName);
             
         } catch (IOException | SQLException e) {
             logger.error("Error processing file: {}", fileName, e);
@@ -643,6 +742,18 @@ public class ParquetFileDirectoryMonitor {
                 }
             } catch (InterruptedException e) {
                 executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+        
+        if (fileProcessingExecutorService != null) {
+            fileProcessingExecutorService.shutdown();
+            try {
+                if (!fileProcessingExecutorService.awaitTermination(60, TimeUnit.SECONDS)) {
+                    fileProcessingExecutorService.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                fileProcessingExecutorService.shutdownNow();
                 Thread.currentThread().interrupt();
             }
         }

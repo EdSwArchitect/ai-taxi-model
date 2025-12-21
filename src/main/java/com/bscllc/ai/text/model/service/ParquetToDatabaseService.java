@@ -179,6 +179,7 @@ public class ParquetToDatabaseService {
                     
                     // Final commit to ensure all data is persisted
                     connection.commit();
+                    logger.debug("Final commit completed for file: {} into table: {}", filePath.getFileName(), tableName);
                     
                     // Update metrics
                     filesProcessedCounter.increment();
@@ -191,10 +192,21 @@ public class ParquetToDatabaseService {
                     // Record successful processing time
                     sample.stop(processingTimeTimer);
                     
+                    logger.debug("About to return from processParquetFile with recordCount: {} for file: {}", recordCount, filePath.getFileName());
                     return recordCount;
+                } catch (SQLException e) {
+                    // Rollback on error
+                    try {
+                        connection.rollback();
+                        logger.debug("Transaction rolled back due to error for file: {}", filePath.getFileName());
+                    } catch (SQLException rollbackEx) {
+                        logger.error("Failed to rollback transaction for file: {}", filePath.getFileName(), rollbackEx);
+                    }
+                    throw e;
                 } finally {
                     // Restore original auto-commit setting
                     connection.setAutoCommit(originalAutoCommit);
+                    logger.debug("Auto-commit restored to {} for connection", originalAutoCommit);
                 }
             }
         } catch (SQLException e) {
