@@ -1,0 +1,33 @@
+green-taxi-point = {
+  type-name = "green-taxi-point"
+  attributes = [
+    { name = "geom", type = "Point", srid = 4326, default = true }
+    { name = "VendorID", type = "Integer", index = true }
+    { name = "lpep_pickup_datetime", type = "Date", index = true }
+    { name = "lpep_dropoff_datetime", type = "Date", index = true }
+    { name = "store_and_fwd_flag", type = "String" }
+    { name = "RatecodeID", type = "Long" }
+    { name = "PULocationID", type = "Integer", index = true }
+    { name = "DOLocationID", type = "Integer", index = true }
+    { name = "passenger_count", type = "Long" }
+    { name = "trip_distance", type = "Double", index = true }
+    { name = "fare_amount", type = "Double", index = true }
+    { name = "extra", type = "Double" }
+    { name = "mta_tax", type = "Double" }
+    { name = "tip_amount", type = "Double", index = true }
+    { name = "tolls_amount", type = "Double" }
+    { name = "ehail_fee", type = "Double" }
+    { name = "improvement_surcharge", type = "Double" }
+    { name = "total_amount", type = "Double", index = true }
+    { name = "payment_type", type = "Long", index = true }
+    { name = "trip_type", type = "Long", index = true }
+    { name = "congestion_surcharge", type = "Double" }
+    { name = "cbd_congestion_fee", type = "Double" }
+  ]
+  user-data = {
+    geomesa.index.dtg = "lpep_pickup_datetime"
+    geomesa.stats.enable = "true"
+    geomesa.feature.expiration = "P30D"
+  }
+}
+

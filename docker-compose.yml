@@ -238,6 +238,31 @@ services:
     networks:
       - ai-taxi-network
 
+  # GeoServer 2.28
+  geoserver:
+    image: oscarfonts/geoserver:2.28
+    container_name: geoserver
+    environment:
+      - GEOSERVER_DATA_DIR=/var/local/geoserver
+      - JAVA_OPTS=-Xms512m -Xmx1024m -XX:MaxPermSize=256m
+      - ENABLE_JSONP=true
+      - MAX_FILTER_RULES=20
+      - OPTIMIZE_LINE_WIDTH=false
+      - STABLE_TIMEZONE=UTC
+    ports:
+      - "8081:8080"  # GeoServer web interface (mapped to 8081 to avoid conflict with Quarkus on 8080)
+    volumes:
+      - geoserver_data:/var/local/geoserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/geoserver/web || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-taxi-network
+    depends_on:
+      - postgres
+
 volumes:
   postgres_data:
   kafka_data:
@@ -246,6 +271,7 @@ volumes:
   prometheus_data:
   grafana_data:
   etcd_data:
+  geoserver_data:
 
 networks:
   ai-taxi-network:
