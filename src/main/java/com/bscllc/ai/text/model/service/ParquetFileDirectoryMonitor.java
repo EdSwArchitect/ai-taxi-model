@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.logging.log4j.LogManager;
@@ -28,6 +29,10 @@ import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.io.InputFile;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+import com.bscllc.ai.text.model.TaxiParquetSchemas;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -48,6 +53,7 @@ public class ParquetFileDirectoryMonitor {
 
     private static final Logger logger = LogManager.getLogger(ParquetFileDirectoryMonitor.class);
     private static final String PARQUET_EXTENSION = ".parquet";
+    private static final ObjectMapper objectMapper = new ObjectMapper();
     
     @Inject
     ParquetToDatabaseService parquetToDatabaseService;
@@ -538,12 +544,9 @@ public class ParquetFileDirectoryMonitor {
                 return;
             }
             
-            // Determine table name based on schema type and file name
-            // Each file gets its own table to avoid conflicts
-            // Format: {taxitype}_{filename without extension}
-            String fileNameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.'));
-            String prefix = schemaType == SchemaType.GREEN ? "greentaxi" : "yellowtaxi";
-            String tableName = prefix + "_" + fileNameWithoutExt.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase();
+            // Determine table name based on schema type
+            // Use the schema name (YELLOW or GREEN) directly as the table name
+            String tableName = schemaType == SchemaType.GREEN ? "GREEN" : "YELLOW";
             
             // Process file using ParquetToDatabaseService
             // Use dropIfExists=false to preserve existing data
@@ -610,21 +613,36 @@ public class ParquetFileDirectoryMonitor {
     }
 
     /**
-     * Detects the schema type of a Parquet file by attempting to validate
-     * against both Green and Yellow taxi schemas.
+     * Detects the schema type of a Parquet file by extracting the schema as JSON
+     * and comparing it to the constants in TaxiParquetSchemas.
+     * 
+     * @param file the Parquet file to check
+     * @return the matching schema type (GREEN, YELLOW, or UNKNOWN)
      */
     private SchemaType detectSchemaType(Path file) {
         try {
-            // Try Green schema first
-            if (isGreenTaxiSchema(file)) {
-                return SchemaType.GREEN;
+            // Extract schema as JSON from the parquet file
+            String fileSchemaJson = extractSchemaAsJson(file);
+            if (fileSchemaJson == null) {
+                logger.warn("Could not extract schema from file: {}", file);
+                return SchemaType.UNKNOWN;
             }
             
-            // Try Yellow schema
-            if (isYellowTaxiSchema(file)) {
+            logger.debug("Extracted schema from file: {}", file);
+            
+            // Compare with YELLOW schema constant
+            if (schemasMatch(fileSchemaJson, TaxiParquetSchemas.YELLOW)) {
+                logger.info("File {} matches YELLOW schema", file.getFileName());
                 return SchemaType.YELLOW;
             }
             
+            // Compare with GREEN schema constant
+            if (schemasMatch(fileSchemaJson, TaxiParquetSchemas.GREEN)) {
+                logger.info("File {} matches GREEN schema", file.getFileName());
+                return SchemaType.GREEN;
+            }
+            
+            logger.warn("File {} does not match YELLOW or GREEN schema", file.getFileName());
             return SchemaType.UNKNOWN;
         } catch (Exception e) {
             logger.error("Error detecting schema type for file: {}", file, e);
@@ -633,9 +651,12 @@ public class ParquetFileDirectoryMonitor {
     }
 
     /**
-     * Checks if a file matches the Green taxi schema.
+     * Extracts the schema from a Parquet file as a JSON string.
+     * 
+     * @param file the Parquet file
+     * @return the schema as a JSON string, or null if extraction fails
      */
-    private boolean isGreenTaxiSchema(Path file) {
+    private String extractSchemaAsJson(Path file) {
         try {
             Configuration conf = new Configuration();
             conf.set("fs.defaultFS", "file:///");
@@ -648,45 +669,38 @@ public class ParquetFileDirectoryMonitor {
                     AvroParquetReader.<GenericRecord>builder(inputFile).build()) {
                 GenericRecord firstRecord = reader.read();
                 if (firstRecord == null) {
-                    return false;
+                    logger.warn("Parquet file is empty: {}", file);
+                    return null;
                 }
                 
-                org.apache.avro.Schema schema = firstRecord.getSchema();
-                // Check for Green taxi specific fields
-                return schema.getField("lpep_pickup_datetime") != null &&
-                       schema.getField("trip_type") != null;
+                Schema schema = firstRecord.getSchema();
+                // Avro schema toString() returns JSON format
+                return schema.toString();
             }
         } catch (Exception e) {
-            return false;
+            logger.error("Error extracting schema from file: {}", file, e);
+            return null;
         }
     }
 
     /**
-     * Checks if a file matches the Yellow taxi schema.
+     * Compares two JSON schema strings by normalizing them and checking for equality.
+     * This handles differences in whitespace and field ordering.
+     * 
+     * @param schema1 first schema JSON string
+     * @param schema2 second schema JSON string
+     * @return true if the schemas match, false otherwise
      */
-    private boolean isYellowTaxiSchema(Path file) {
+    private boolean schemasMatch(String schema1, String schema2) {
         try {
-            Configuration conf = new Configuration();
-            conf.set("fs.defaultFS", "file:///");
-            conf.setBoolean("fs.file.impl.disable.cache", true);
+            // Parse both schemas as JSON nodes
+            JsonNode node1 = objectMapper.readTree(schema1.trim());
+            JsonNode node2 = objectMapper.readTree(schema2.trim());
             
-            org.apache.hadoop.fs.Path hadoopPath = new org.apache.hadoop.fs.Path(file.toUri());
-            InputFile inputFile = HadoopInputFile.fromPath(hadoopPath, conf);
-            
-            try (ParquetReader<GenericRecord> reader = 
-                    AvroParquetReader.<GenericRecord>builder(inputFile).build()) {
-                GenericRecord firstRecord = reader.read();
-                if (firstRecord == null) {
-                    return false;
-                }
-                
-                org.apache.avro.Schema schema = firstRecord.getSchema();
-                // Check for Yellow taxi specific fields
-                return schema.getField("tpep_pickup_datetime") != null &&
-                       schema.getField("tpep_dropoff_datetime") != null &&
-                       schema.getField("lpep_pickup_datetime") == null; // Ensure it's not Green
-            }
+            // Compare the JSON structures (this handles field ordering differences)
+            return node1.equals(node2);
         } catch (Exception e) {
+            logger.debug("Error comparing schemas: {}", e.getMessage());
             return false;
         }
     }

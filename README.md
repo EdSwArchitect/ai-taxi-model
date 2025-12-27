@@ -7,6 +7,8 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **Data Models**: Java records for Yellow Taxi and Green Taxi trip data with validation
 - **Parquet File Reading**: Efficient readers for processing large Parquet files
 - **Schema Validation**: Automatic validation of Parquet file schemas
+- **Schema Constants**: Pre-defined JSON schemas for Yellow and Green taxi data (`TaxiParquetSchemas`)
+- **Schema Comparison**: Automatic schema detection by comparing Parquet file schemas to constants
 - **JSON Support**: Full JSON serialization/deserialization support using Jackson
 - **Type-Safe Enums**: Enum classes for VendorID, RatecodeID, and TripType
 - **Quarkus Services**: 
@@ -41,16 +43,23 @@ ai-taxi-model/
 │   │   │       ├── input/              # Parquet file readers
 │   │   │       │   ├── YellowReader.java
 │   │   │       │   └── GreenReader.java
-│   │   │       └── service/            # Quarkus services
-│   │   │           ├── TaxiMonitor.java
-│   │   │           ├── ParquetFileDirectoryMonitor.java
-│   │   │           ├── ParquetToDatabaseService.java
-│   │   │           └── OpenSearchService.java
+│   │   │       ├── service/           # Quarkus services
+│   │   │       │   ├── TaxiMonitor.java
+│   │   │       │   ├── ParquetFileDirectoryMonitor.java
+│   │   │       │   ├── ParquetToDatabaseService.java
+│   │   │       │   └── OpenSearchService.java
+│   │   │       ├── util/              # Utility classes
+│   │   │       │   └── ParquetSampler.java
+│   │   │       └── TaxiParquetSchemas.java  # Schema constants (YELLOW, GREEN)
 │   │   └── resources/
 │   │       ├── log4j2.xml              # Logging configuration
 │   │       └── application.properties  # Quarkus configuration
 │   └── test/
 │       ├── java/                        # Test classes
+│       │   └── com/bscllc/ai/text/model/
+│       │       └── util/
+│       │           ├── ParquetSamplerTest.java
+│       │           └── ParquetSchemaPrinterTest.java  # Schema printing utility
 │       └── resources/
 │           ├── log4j2.xml              # Test logging configuration
 │           ├── yellow_tripdata_2025_01.parquet
@@ -270,6 +279,9 @@ The project includes comprehensive test coverage:
 - **Reader Tests**: File reading, schema validation, error handling
 - **Enum Tests**: Code conversion, validation, edge cases
 - **JSON Tests**: Serialization, deserialization, round-trip testing
+- **Utility Tests**:
+  - `ParquetSamplerTest`: Tests for sampling records from Parquet files
+  - `ParquetSchemaPrinterTest`: Tests for printing Parquet file schemas in JSON format
 - **Service Tests**: 
   - TaxiMonitor integration tests
   - ParquetFileDirectoryMonitor integration tests
@@ -410,6 +422,15 @@ docker-compose up -d postgres
 mvn test -Dtest=ParquetToDatabaseServiceTest
 ```
 
+**Run utility tests**:
+```bash
+# Test Parquet schema printing
+mvn test -Dtest=ParquetSchemaPrinterTest
+
+# Test Parquet sampling
+mvn test -Dtest=ParquetSamplerTest
+```
+
 **Note**: Tests that require PostgreSQL will automatically skip with a helpful message if the database is not available. This allows the test suite to run in environments without PostgreSQL, though those specific tests will be skipped.
 
 ## Data Files
@@ -422,6 +443,40 @@ Place Parquet files in one of these locations:
 Example file names:
 - `yellow_tripdata_2025_01.parquet`
 - `green_tripdata_2025_01.parquet`
+
+## Schema Constants
+
+The project includes pre-defined JSON schemas for Yellow and Green taxi data in `TaxiParquetSchemas`:
+
+```java
+import com.bscllc.ai.text.model.TaxiParquetSchemas;
+
+// Access Yellow taxi schema
+String yellowSchema = TaxiParquetSchemas.YELLOW;
+
+// Access Green taxi schema
+String greenSchema = TaxiParquetSchemas.GREEN;
+```
+
+These schemas are used by `ParquetFileDirectoryMonitor` to automatically detect and match Parquet file schemas. The schemas are stored as JSON strings and can be used for:
+- Schema validation
+- Schema comparison
+- Documentation
+- Testing
+
+### Printing Parquet Schemas
+
+You can use the `ParquetSchemaPrinterTest` to print the schema of any Parquet file:
+
+```bash
+mvn test -Dtest=ParquetSchemaPrinterTest#testPrintYellowTripdataSchema
+mvn test -Dtest=ParquetSchemaPrinterTest#testPrintGreenTripdataSchema
+```
+
+This will output the schema in JSON format, which can be useful for:
+- Verifying schema compatibility
+- Understanding file structure
+- Debugging schema mismatches
 
 ## Quarkus Services
 
@@ -708,13 +763,14 @@ parquet.database.batch.size=1000                 # Number of records per databas
    - This ensures data appears in the database periodically, not just when the application exits
 
 3. **Schema Detection**:
-   - Automatically detects whether files match Green Taxi or Yellow Taxi schemas
+   - Extracts the Parquet file schema as JSON
+   - Compares the schema against constants in `TaxiParquetSchemas` (YELLOW and GREEN)
+   - Uses JSON comparison to match schemas (handles field ordering differences)
    - Invalid schema files are moved to the error directory with `schema_mismatch` suffix
 
 4. **Database Processing**:
    - Creates PostgreSQL tables dynamically based on Parquet file schema
-   - Table naming: `greentaxi_{filename}` or `yellowtaxi_{filename}`
-   - Each file gets its own table to avoid conflicts
+   - **Table naming**: Uses schema name directly - `GREEN` or `YELLOW` (all files with the same schema type are inserted into the same table)
    - Inserts records in batches (configurable via `parquet.database.batch.size`, default: 1000)
    - **Explicit Commits**: Each database batch is explicitly committed, ensuring data is immediately visible in the database
    - Final commit ensures all data is persisted before marking the file as processed
@@ -762,9 +818,10 @@ The service will:
    # Watch for processing messages
    # You should see logs like:
    # "Detected new parquet file: yellow_tripdata_2025_01.parquet"
+   # "File yellow_tripdata_2025_01.parquet matches YELLOW schema"
    # "Processing file: yellow_tripdata_2025_01.parquet"
    # "Processing Parquet file: ..."
-   # "Successfully processed X records from ... into table yellowtaxi_yellow_tripdata_2025_01"
+   # "Successfully processed X records from ... into table YELLOW"
    # "Moved successfully processed file ... to processed directory"
    ```
 
@@ -776,9 +833,11 @@ The service will:
    # List tables
    \dt
    
-   # Query data from a table
-   SELECT COUNT(*) FROM "yellowtaxi_yellow_tripdata_2025_01";
-   SELECT * FROM "yellowtaxi_yellow_tripdata_2025_01" LIMIT 5;
+   # Query data from tables (all files with same schema use the same table)
+   SELECT COUNT(*) FROM "YELLOW";
+   SELECT * FROM "YELLOW" LIMIT 5;
+   SELECT COUNT(*) FROM "GREEN";
+   SELECT * FROM "GREEN" LIMIT 5;
    ```
 
 4. **Verify file movement**:
@@ -820,6 +879,14 @@ The service will:
   - Table name sanitization
 - **Location**: `com.bscllc.ai.text.model.service.ParquetToDatabaseService`
 
+##### TaxiParquetSchemas
+- **Purpose**: Contains JSON schema constants for Yellow and Green taxi Parquet files
+- **Constants**: 
+  - `YELLOW`: JSON schema for Yellow taxi trip data
+  - `GREEN`: JSON schema for Green taxi trip data
+- **Usage**: Used by `ParquetFileDirectoryMonitor` for schema comparison
+- **Location**: `com.bscllc.ai.text.model.TaxiParquetSchemas`
+
 #### Troubleshooting
 
 **Service not detecting files**:
@@ -836,7 +903,7 @@ The service will:
 **Table creation errors**:
 - Check PostgreSQL logs for SQL errors
 - Verify user has CREATE TABLE permissions
-- Check if table already exists (each file gets its own table)
+- Note: All files with the same schema type (YELLOW or GREEN) are inserted into the same table
 
 **Files not being processed**:
 - Check that files match Yellow or Green taxi schemas
