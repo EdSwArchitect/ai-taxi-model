@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -69,6 +71,9 @@ public class OpenSearchService {
     private Counter bulkOperationsCounter;
     private Counter yellowTaxiBulkOperationsCounter;
     private Counter greenTaxiBulkOperationsCounter;
+    
+    // Semaphore to limit concurrent bulk operations
+    private Semaphore bulkOperationSemaphore;
 
     /**
      * Lazily gets the MeterRegistry from CDI container if available.
@@ -162,6 +167,12 @@ public class OpenSearchService {
 
     @ConfigProperty(name = "opensearch.password", defaultValue = "admin")
     String opensearchPassword;
+
+    @ConfigProperty(name = "opensearch.bulk.index.delay.ms", defaultValue = "100")
+    long bulkIndexDelayMs;
+
+    @ConfigProperty(name = "opensearch.bulk.index.max.concurrent", defaultValue = "2")
+    int maxConcurrentBulkOperations;
 
     void onStart(@Observes StartupEvent ev) {
         String host = opensearchHost;
@@ -267,18 +278,53 @@ public class OpenSearchService {
             return httpClientBuilder;
         });
         this.restClient = builder.build();
+        
+        // Initialize semaphore for rate limiting concurrent bulk operations
+        this.bulkOperationSemaphore = new Semaphore(maxConcurrentBulkOperations, true);
 
         logger.info("OpenSearch client initialized successfully");
+        logger.info("Bulk indexing configuration: delay={}ms, maxConcurrent={}", bulkIndexDelayMs, maxConcurrentBulkOperations);
     }
 
     /**
      * Performs a bulk index operation using REST API directly.
+     * Rate limiting is applied via semaphore and delay to prevent overwhelming OpenSearch
+     * and avoid thread blocking issues. This method should be called from worker threads
+     * (e.g., from @Scheduled methods which run on worker threads by default).
      *
      * @param index the index name
      * @param documents list of documents to index
      */
     public void bulkIndex(String index, List<Map<String, Object>> documents) {
+        // Acquire semaphore to limit concurrent operations
         try {
+            if (!bulkOperationSemaphore.tryAcquire(30, TimeUnit.SECONDS)) {
+                logger.warn("Timeout waiting for bulk operation semaphore. Index: {}, documents: {}", index, documents.size());
+                if (metricsInitialized && indexingErrorsCounter != null) {
+                    indexingErrorsCounter.increment();
+                }
+                throw new RuntimeException("Timeout waiting for bulk operation slot");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.error("Interrupted while waiting for bulk operation semaphore", e);
+            if (metricsInitialized && indexingErrorsCounter != null) {
+                indexingErrorsCounter.increment();
+            }
+            throw new RuntimeException("Interrupted while waiting for bulk operation", e);
+        }
+        
+        try {
+            // Add delay before indexing to prevent overwhelming OpenSearch
+            if (bulkIndexDelayMs > 0) {
+                try {
+                    Thread.sleep(bulkIndexDelayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Interrupted during bulk index delay", e);
+                }
+            }
+            
             StringBuilder bulkBody = new StringBuilder();
             
             for (Map<String, Object> doc : documents) {
@@ -309,7 +355,7 @@ public class OpenSearchService {
             try (CloseableHttpResponse response = httpClient.execute(httpHost, request, httpContext)) {
                 if (response.getStatusLine().getStatusCode() >= 200 && 
                     response.getStatusLine().getStatusCode() < 300) {
-                    logger.info("Bulk index operation successful: {} items indexed", documents.size());
+                    logger.debug("Bulk index operation successful: {} items indexed to {}", documents.size(), index);
                     
                     // Update metrics (if available)
                     if (metricsInitialized && bulkOperationsCounter != null) {
@@ -324,18 +370,21 @@ public class OpenSearchService {
                         }
                     }
                 } else {
-                    logger.warn("Bulk index operation had errors: {}", response.getStatusLine().getStatusCode());
+                    logger.warn("Bulk index operation had errors: {} for index {}", response.getStatusLine().getStatusCode(), index);
                     if (metricsInitialized && indexingErrorsCounter != null) {
                         indexingErrorsCounter.increment();
                     }
                 }
             }
         } catch (Exception e) {
-            logger.error("Error executing bulk index operation", e);
+            logger.error("Error executing bulk index operation for index: {}", index, e);
             if (metricsInitialized && indexingErrorsCounter != null) {
                 indexingErrorsCounter.increment();
             }
             throw new RuntimeException("Failed to execute bulk index", e);
+        } finally {
+            // Always release semaphore
+            bulkOperationSemaphore.release();
         }
     }
 

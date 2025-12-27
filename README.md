@@ -11,6 +11,7 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **Schema Comparison**: Automatic schema detection by comparing Parquet file schemas to constants
 - **JSON Support**: Full JSON serialization/deserialization support using Jackson
 - **Type-Safe Enums**: Enum classes for VendorID, RatecodeID, and TripType
+- **etcd Configuration**: Automatic configuration loading from etcd with fallback to properties files
 - **Quarkus Services**: 
   - `TaxiMonitor`: Automated file monitoring and indexing to OpenSearch (polling-based)
   - `ParquetFileDirectoryMonitor`: Real-time directory monitoring using WatchService with database storage
@@ -48,6 +49,8 @@ ai-taxi-model/
 │   │   │       │   ├── ParquetFileDirectoryMonitor.java
 │   │   │       │   ├── ParquetToDatabaseService.java
 │   │   │       │   └── OpenSearchService.java
+│   │   │       ├── config/            # Configuration sources
+│   │   │       │   └── EtcdConfigSource.java  # etcd configuration source
 │   │   │       ├── util/              # Utility classes
 │   │   │       │   └── ParquetSampler.java
 │   │   │       └── TaxiParquetSchemas.java  # Schema constants (YELLOW, GREEN)
@@ -81,6 +84,7 @@ ai-taxi-model/
 - **OpenSearch REST Client** - OpenSearch Java client for indexing data
 - **PostgreSQL JDBC Driver** - Database connectivity for ParquetToDatabaseService and testing
 - **Micrometer** (via Quarkus) - Metrics collection and Prometheus export
+- **jetcd** (0.8.0) - etcd Java client for configuration management
 
 ## Building the Project
 
@@ -477,6 +481,46 @@ This will output the schema in JSON format, which can be useful for:
 - Verifying schema compatibility
 - Understanding file structure
 - Debugging schema mismatches
+
+## Configuration Management
+
+The application supports configuration from multiple sources with automatic fallback:
+
+1. **etcd** (Priority: 250) - Distributed key-value store for centralized configuration
+2. **Properties Files** (Priority: 100) - Local `application.properties` files
+
+### etcd Configuration
+
+The application automatically attempts to load configuration from etcd on startup. If etcd is available, configuration values from etcd take precedence over properties files. If etcd is unavailable, the application gracefully falls back to properties files.
+
+**Configuration Keys in etcd:**
+- All configuration keys are stored under the prefix: `/ai-taxi-model/config/`
+- Example: `/ai-taxi-model/config/taxi.monitor.enabled`
+
+**etcd Connection:**
+- Default endpoint: `http://localhost:2379`
+- Configurable via environment variables:
+  - `ETCD_HOST` (default: `localhost`)
+  - `ETCD_PORT` (default: `2379`)
+- Or via system properties: `-DETCD_HOST=etcd -DETCD_PORT=2379`
+
+**Populating etcd Configuration:**
+```bash
+# Start etcd
+docker-compose up -d etcd
+
+# Populate configuration
+./scripts/populate-etcd-config.sh [profile]
+
+# View configuration
+./scripts/list-etcd-config.sh
+```
+
+**Configuration Caching:**
+- etcd configuration is cached for 30 seconds to reduce load
+- Cache is automatically refreshed when stale
+
+See [README-DOCKER.md](README-DOCKER.md) for detailed etcd setup and usage instructions.
 
 ## Quarkus Services
 

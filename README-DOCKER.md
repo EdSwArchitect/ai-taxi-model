@@ -10,6 +10,7 @@ This directory contains a Docker Compose configuration for running the AI Taxi M
 - **OpenSearch Dashboards 3.3.2**: Visualization UI on port 5601
 - **Prometheus**: Metrics collection on port 9090
 - **Grafana 12.3.0**: Metrics visualization on port 3000
+- **etcd 3.6**: Distributed key-value store for configuration management on ports 2379 (Client API) and 2380 (Peer)
 
 ## Quick Start
 
@@ -41,6 +42,7 @@ docker-compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 - OpenSearch Dashboards: http://localhost:5601
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin/admin)
+- etcd: `docker exec -e ETCDCTL_API=3 etcd etcdctl --endpoints=http://localhost:2379 endpoint health`
 
 ## TLS Configuration
 
@@ -182,6 +184,7 @@ All service data is persisted in Docker volumes:
 - `opensearch-dashboards_data`: Dashboards configuration
 - `prometheus_data`: Prometheus metrics
 - `grafana_data`: Grafana dashboards and settings
+- `etcd_data`: etcd key-value store data
 
 ## Stopping Services
 
@@ -243,6 +246,76 @@ docker-compose restart
 7. Use secrets management
 8. Enable authentication for all services
 
+## etcd Configuration Management
+
+### Overview
+
+etcd is a distributed key-value store that can be used to store application configuration parameters. The application configuration can be stored in etcd and retrieved at runtime.
+
+### Populating Configuration
+
+To populate etcd with application configuration parameters:
+
+```bash
+# Populate with default configuration
+./scripts/populate-etcd-config.sh
+
+# Populate with development profile configuration
+./scripts/populate-etcd-config.sh dev
+
+# Populate with production profile configuration
+./scripts/populate-etcd-config.sh prod
+```
+
+### Viewing Configuration
+
+To list all configuration parameters stored in etcd:
+
+```bash
+./scripts/list-etcd-config.sh
+```
+
+To view a specific configuration key:
+
+```bash
+docker exec -e ETCDCTL_API=3 etcd etcdctl --endpoints=http://localhost:2379 get "/ai-taxi-model/config/taxi.monitor.enabled"
+```
+
+### Deleting Configuration
+
+To delete all configuration parameters from etcd:
+
+```bash
+./scripts/delete-etcd-config.sh
+```
+
+### Configuration Keys
+
+All configuration keys are stored under the prefix `/ai-taxi-model/config/`:
+
+- **Taxi Monitor**: `taxi.monitor.enabled`, `taxi.monitor.input.dir`, `taxi.monitor.error.dir`, `taxi.monitor.processed.dir`
+- **Parquet Monitor**: `parquet.monitor.enabled`, `parquet.monitor.input.dir`, `parquet.monitor.error.dir`, `parquet.monitor.processed.dir`, `parquet.monitor.batch.size`, `parquet.monitor.batch.timer.seconds`, `parquet.database.batch.size`
+- **OpenSearch**: `opensearch.host`, `opensearch.port`, `opensearch.scheme`, `opensearch.username`, `opensearch.password`
+- **Database**: `db.url`, `db.username`, `db.password`, `db.schema`, `db.ssl.enabled`, `db.ssl.mode`
+- **Quarkus**: `quarkus.http.port`, `quarkus.http.host`, `quarkus.log.level`, `quarkus.micrometer.export.prometheus.enabled`, `quarkus.scheduler.enabled`
+
+### Using etcd Configuration in Application
+
+To use etcd configuration in your Quarkus application, you would need to:
+
+1. Add etcd client dependency to `pom.xml`
+2. Configure Quarkus to read from etcd (using MicroProfile Config or custom configuration source)
+3. Access configuration values using `@ConfigProperty` annotations
+
+**Note**: Currently, the application reads configuration from `application.properties` files. To use etcd, you would need to implement a custom configuration source or use a library that provides etcd integration.
+
+### etcd Service Details
+
+- **Client API**: `localhost:2379`
+- **Peer Communication**: `localhost:2380`
+- **Data Persistence**: Stored in `etcd_data` Docker volume
+- **Health Check**: Monitors etcd health status
+
 ## Network
 
 All services are on the `ai-taxi-network` bridge network and can communicate using service names:
@@ -252,4 +325,5 @@ All services are on the `ai-taxi-network` bridge network and can communicate usi
 - `opensearch-dashboards`
 - `prometheus`
 - `grafana`
+- `etcd`
 

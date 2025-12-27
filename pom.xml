@@ -222,6 +222,13 @@
             <version>2.3.232</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- etcd Java Client (jetcd) -->
+        <dependency>
+            <groupId>io.etcd</groupId>
+            <artifactId>jetcd-core</artifactId>
+            <version>0.8.0</version>
+        </dependency>
     </dependencies>
 
     <build>
