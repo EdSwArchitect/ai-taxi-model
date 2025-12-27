@@ -229,7 +229,73 @@
             <artifactId>jetcd-core</artifactId>
             <version>0.8.0</version>
         </dependency>
+
+        <!-- GeoMesa dependencies are optional and may require additional setup -->
+        <!-- Uncomment and configure repositories if you need GeoMesa integration -->
+        <!--
+        <dependency>
+            <groupId>org.locationtech.geomesa</groupId>
+            <artifactId>geomesa-utils_2.13</artifactId>
+            <version>4.0.4</version>
+        </dependency>
+        <dependency>
+            <groupId>org.locationtech.geomesa</groupId>
+            <artifactId>geomesa-fs-datastore_2.13</artifactId>
+            <version>4.0.4</version>
+        </dependency>
+        -->
+
+        <!-- GeoTools Core (for GeoMesa integration - optional) -->
+        <!--
+        <dependency>
+            <groupId>org.geotools</groupId>
+            <artifactId>gt-main</artifactId>
+            <version>31.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.geotools</groupId>
+            <artifactId>gt-data</artifactId>
+            <version>31.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.geotools</groupId>
+            <artifactId>gt-shapefile</artifactId>
+            <version>31.2</version>
+        </dependency>
+        -->
+
+        <!-- JTS Geometry (for geometry operations) -->
+        <dependency>
+            <groupId>org.locationtech.jts</groupId>
+            <artifactId>jts-core</artifactId>
+            <version>1.19.0</version>
+        </dependency>
     </dependencies>
+
+    <repositories>
+        <repository>
+            <id>osgeo</id>
+            <name>OSGeo Release Repository</name>
+            <url>https://repo.osgeo.org/repository/release/</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+        </repository>
+        <repository>
+            <id>locationtech-releases</id>
+            <name>LocationTech Release Repository</name>
+            <url>https://repo.locationtech.org/content/repositories/releases/</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>

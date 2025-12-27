@@ -19,7 +19,9 @@ A Java 24 Maven project for reading and processing NYC Taxi and Limousine Commis
 - **OpenSearch Integration**: Bulk indexing of taxi trip data
 - **PostgreSQL Integration**: Automatic table creation and data insertion from Parquet files
 - **Metrics & Monitoring**: Micrometer metrics with Prometheus export and Grafana dashboards
-- **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana)
+- **Docker Compose**: Complete infrastructure setup (PostgreSQL, Kafka, OpenSearch, Prometheus, Grafana, GeoServer, etcd)
+- **GeoMesa Integration**: Simple Feature Type (SFT) definitions for spatial data ingestion
+- **GeoServer Integration**: Styled Layer Descriptor (SLD) files for map visualization
 - **Comprehensive Testing**: Full test coverage with JUnit 5 and Mockito
 
 ## Requirements
@@ -48,7 +50,8 @@ ai-taxi-model/
 │   │   │       │   ├── TaxiMonitor.java
 │   │   │       │   ├── ParquetFileDirectoryMonitor.java
 │   │   │       │   ├── ParquetToDatabaseService.java
-│   │   │       │   └── OpenSearchService.java
+│   │   │       │   ├── OpenSearchService.java
+│   │   │       │   └── GeoMesaIngestionService.java  # GeoMesa spatial data ingestion
 │   │   │       ├── config/            # Configuration sources
 │   │   │       │   └── EtcdConfigSource.java  # etcd configuration source
 │   │   │       ├── util/              # Utility classes
@@ -57,6 +60,15 @@ ai-taxi-model/
 │   │   └── resources/
 │   │       ├── log4j2.xml              # Logging configuration
 │   │       └── application.properties  # Quarkus configuration
+│   ├── geoserver/                      # GeoServer configuration
+│   │   ├── sft/                        # GeoMesa Simple Feature Type definitions
+│   │   │   ├── green-taxi*.sft        # Green taxi SFT files (point, linestring, compact)
+│   │   │   ├── yellow-taxi*.sft       # Yellow taxi SFT files (point, linestring, compact)
+│   │   │   └── README.md               # SFT documentation
+│   │   └── styles/                     # GeoServer SLD style files
+│   │       ├── green-taxi-style.sld    # Basic green taxi style
+│   │       ├── green-taxi-comprehensive.sld  # Comprehensive green taxi style
+│   │       └── README.md               # SLD documentation
 │   └── test/
 │       ├── java/                        # Test classes
 │       │   └── com/bscllc/ai/text/model/
@@ -85,6 +97,9 @@ ai-taxi-model/
 - **PostgreSQL JDBC Driver** - Database connectivity for ParquetToDatabaseService and testing
 - **Micrometer** (via Quarkus) - Metrics collection and Prometheus export
 - **jetcd** (0.8.0) - etcd Java client for configuration management
+- **JTS Geometry** (1.19.0) - Java Topology Suite for geometry operations
+- **GeoMesa** (optional) - Spatial data indexing and querying (dependencies commented out, see GeoMesa Integration section)
+- **GeoTools** (optional) - Geospatial data processing (dependencies commented out, see GeoMesa Integration section)
 
 ## Building the Project
 
@@ -1071,6 +1086,114 @@ See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions.
 
 This project is part of the AI Playground workspace.
 
+## GeoMesa Integration
+
+The project includes GeoMesa Simple Feature Type (SFT) definitions for spatial data ingestion into GeoMesa/GeoServer.
+
+### SFT Files
+
+Simple Feature Type definitions are located in `geoserver/sft/`:
+
+- **Green Taxi SFT Files**:
+  - `green-taxi.sft` - Properties format with Point geometry
+  - `green-taxi-point.sft` - Point geometry with feature expiration
+  - `green-taxi-linestring.sft` - LineString geometry for trip routes
+  - `green-taxi-compact.sft` - Compact string format (Point)
+  - `green-taxi-linestring-compact.sft` - Compact string format (LineString)
+
+- **Yellow Taxi SFT Files**:
+  - `yellow-taxi.sft` - Properties format with Point geometry
+  - `yellow-taxi-point.sft` - Point geometry with feature expiration
+  - `yellow-taxi-linestring.sft` - LineString geometry for trip routes
+  - `yellow-taxi-compact.sft` - Compact string format (Point)
+  - `yellow-taxi-linestring-compact.sft` - Compact string format (LineString)
+
+### SFT Schema Fields
+
+All SFT files include all fields from the respective Parquet schemas:
+- Geometry field (Point or LineString, SRID 4326)
+- Temporal indexing on pickup datetime fields
+- Indexed fields for common queries (VendorID, location IDs, amounts, payment types)
+- Statistics enabled for faster queries
+
+See `geoserver/sft/README.md` for detailed documentation.
+
+### GeoMesa Ingestion Service
+
+The `GeoMesaIngestionService` provides methods to ingest taxi trip data into GeoMesa:
+
+```java
+@Inject
+GeoMesaIngestionService geoMesaService;
+
+// Ingest a green taxi file
+long count = geoMesaService.ingestGreenTaxiFile(parquetFile);
+
+// Ingest a yellow taxi file
+long count = geoMesaService.ingestYellowTaxiFile(parquetFile);
+```
+
+**Note**: The GeoMesa service is currently a stub implementation. To enable full functionality:
+
+1. Uncomment GeoMesa and GeoTools dependencies in `pom.xml`
+2. Restore the full implementation (see git history or service class comments)
+3. Configure GeoMesa repositories if needed
+
+### Configuration
+
+GeoMesa configuration is available in all application property files:
+
+```properties
+# GeoMesa Configuration
+geomesa.ingestion.enabled=true
+geomesa.datastore.type=filesystem
+geomesa.filesystem.path=./data/geomesa
+geomesa.hbase.catalog=geomesa
+geomesa.hbase.zookeepers=localhost:2181
+geomesa.ingestion.batch.size=1000
+```
+
+Configuration is also available in etcd via the `populate-etcd-config.sh` script.
+
+## GeoServer Integration
+
+The project includes GeoServer SLD (Styled Layer Descriptor) files for styling taxi trip data in GeoServer.
+
+### SLD Files
+
+Styled Layer Descriptor files are located in `geoserver/styles/`:
+
+- **green-taxi-style.sld**: Basic style that colors points based on total fare amount
+- **green-taxi-comprehensive.sld**: Comprehensive style using multiple attributes (payment type, trip type, passenger count, etc.)
+
+### GeoServer Setup
+
+GeoServer 2.28 is included in the Docker Compose configuration:
+
+```bash
+# Start GeoServer
+docker-compose up -d geoserver
+
+# Access GeoServer web interface
+# http://localhost:8081/geoserver
+# Default credentials: admin/geoserver
+```
+
+### Using SLD Files
+
+1. **Upload the SLD file**:
+   - Log into GeoServer web interface (http://localhost:8081/geoserver)
+   - Navigate to Styles → Add a new style
+   - Upload the `.sld` file
+
+2. **Apply to a layer**:
+   - Navigate to Layers → Select your taxi layer
+   - Edit the layer → Publishing tab
+   - Select the style from the Default Style dropdown
+   - Save
+
+See `geoserver/styles/README.md` for detailed usage instructions.
+
 ## Infrastructure
 
 The project includes Docker Compose configuration for:
@@ -1081,6 +1204,8 @@ The project includes Docker Compose configuration for:
 - **OpenSearch Dashboards 3.3.0**: Visualization UI
 - **Prometheus**: Metrics collection
 - **Grafana 12.3.0**: Metrics visualization
+- **GeoServer 2.28**: Geospatial data server for map visualization
+- **etcd 3.6**: Distributed key-value store for configuration management
 
 See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions, including TLS configuration with self-signed certificates.
 
@@ -1094,4 +1219,7 @@ See [README-DOCKER.md](README-DOCKER.md) for detailed setup instructions, includ
 - [Micrometer Documentation](https://micrometer.io/)
 - [Prometheus Documentation](https://prometheus.io/docs/)
 - [Grafana Documentation](https://grafana.com/docs/)
+- [GeoMesa Documentation](https://www.geomesa.org/)
+- [GeoServer Documentation](https://docs.geoserver.org/)
+- [GeoTools Documentation](https://docs.geotools.org/)
 

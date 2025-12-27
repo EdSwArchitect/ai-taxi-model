@@ -73,6 +73,19 @@ set_etcd_key "${ETCD_PREFIX}/opensearch.password" "admin"
 set_etcd_key "${ETCD_PREFIX}/opensearch.bulk.index.delay.ms" "100"
 set_etcd_key "${ETCD_PREFIX}/opensearch.bulk.index.max.concurrent" "2"
 
+# GeoMesa Configuration
+set_etcd_key "${ETCD_PREFIX}/geomesa.ingestion.enabled" "true"
+set_etcd_key "${ETCD_PREFIX}/geomesa.datastore.type" "filesystem"
+if [ "$PROFILE" = "prod" ]; then
+    set_etcd_key "${ETCD_PREFIX}/geomesa.filesystem.path" "/var/lib/geomesa"
+    set_etcd_key "${ETCD_PREFIX}/geomesa.hbase.zookeepers" "hbase:2181"
+else
+    set_etcd_key "${ETCD_PREFIX}/geomesa.filesystem.path" "./data/geomesa"
+    set_etcd_key "${ETCD_PREFIX}/geomesa.hbase.zookeepers" "localhost:2181"
+fi
+set_etcd_key "${ETCD_PREFIX}/geomesa.hbase.catalog" "geomesa"
+set_etcd_key "${ETCD_PREFIX}/geomesa.ingestion.batch.size" "1000"
+
 # Database Configuration
 if [ "$PROFILE" = "prod" ]; then
     set_etcd_key "${ETCD_PREFIX}/db.url" "jdbc:postgresql://postgres:5432/ai_taxi_model"
